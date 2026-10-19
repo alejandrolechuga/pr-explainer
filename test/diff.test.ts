@@ -50,3 +50,17 @@ describe("annotateDiff", () => {
     expect(out.some((l) => l.includes("new.ts"))).toBe(false);
   });
 });
+
+describe("excerpt", () => {
+  it("shows the cited lines with context, deletions in between, inside one hunk", async () => {
+    const { diffRows, excerpt } = await import("../src/diff.js");
+    const rows = diffRows(readFileSync(new URL("./fixtures/sample.patch", import.meta.url), "utf8"));
+    const e = excerpt(rows.get("src/cart.ts"), "new", 12, 15, 1);
+    expect(e.rows.map((r) => `${r.kind}${r.text.trim()}`)).toEqual([
+      " for (const i of items) {", "-sum += i.price;", "+sum += i.price * i.qty;", " }", "+if (sum > 100) {", "+sum = sum * 0.9;", "+}",
+    ]);
+    expect(excerpt(rows.get("old.txt"), "old", 1).rows.map((r) => r.text)).toEqual(["gone"]);
+    expect(excerpt(rows.get("src/cart.ts"), "new", 99).rows).toEqual([]);
+    expect(excerpt(rows.get("src/cart.ts"), "new", 10, 18, 0, 3)).toMatchObject({ more: 7 });
+  });
+});

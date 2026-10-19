@@ -115,3 +115,69 @@ export function annotateDiff(text: string, only?: string): string {
   }
   return out.join("\n").trim();
 }
+
+export interface Row {
+  kind: "+" | "-" | " ";
+  old?: number;
+  new?: number;
+  text: string;
+  hunk: number;
+}
+
+/** every line of every hunk, per file (new path), with old and new numbers */
+export function diffRows(text: string): Map<string, Row[]> {
+  const out = new Map<string, Row[]>();
+  let rows: Row[] | null = null;
+  let oldN = 0;
+  let newN = 0;
+  let hunk = -1;
+  let inHunk = false;
+  let deleted = false;
+  let oldPath = "";
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const m = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+      oldPath = m?.[1] ?? "";
+      rows = [];
+      out.set(m?.[2] ?? oldPath, rows);
+      inHunk = false;
+      deleted = false;
+      continue;
+    }
+    if (!rows) continue;
+    if (!inHunk && line.startsWith("deleted file mode")) deleted = true;
+    if (!inHunk && line.startsWith("rename to ")) { const r = rows; for (const [k, v] of out) if (v === r) out.delete(k); out.set(line.slice(10), r); }
+    const h = HUNK.exec(line);
+    if (h) {
+      oldN = Number(h[1]);
+      newN = Number(h[3]);
+      hunk++;
+      inHunk = true;
+      if (deleted && oldPath) { const r = rows; for (const [k, v] of out) if (v === r) out.delete(k); out.set(oldPath, r); }
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith("+")) rows.push({ kind: "+", new: newN++, text: line.slice(1), hunk });
+    else if (line.startsWith("-")) rows.push({ kind: "-", old: oldN++, text: line.slice(1), hunk });
+    else if (line.startsWith(" ")) rows.push({ kind: " ", old: oldN++, new: newN++, text: line.slice(1), hunk });
+  }
+  return out;
+}
+
+/** The diff lines a citation points at, with a little context, inside one hunk.
+    Long ranges keep their first `max` lines and say how many were left out. */
+export function excerpt(rows: Row[] | undefined, side: "new" | "old", line: number, end = line, context = 2, max = 30): { rows: Row[]; more: number } {
+  if (!rows) return { rows: [], more: 0 };
+  const num = (r: Row) => (side === "new" ? r.new : r.old);
+  const hits = rows.map((r, i) => [r, i] as const).filter(([r]) => { const n = num(r); return n !== undefined && n >= line && n <= end; });
+  if (!hits.length) return { rows: [], more: 0 };
+  const hunk = hits[0]![0].hunk;
+  let a = hits[0]![1];
+  let b = hits.filter(([r]) => r.hunk === hunk).at(-1)![1];
+  // removed lines right before the first cited new line belong to the change, not the context
+  if (side === "new") while (a > 0 && rows[a - 1]!.hunk === hunk && rows[a - 1]!.kind === "-") a--;
+  for (let k = 0; k < context && a > 0 && rows[a - 1]!.hunk === hunk; k++) a--;
+  for (let k = 0; k < context && b < rows.length - 1 && rows[b + 1]!.hunk === hunk; k++) b++;
+  const all = rows.slice(a, b + 1);
+  return all.length > max ? { rows: all.slice(0, max), more: all.length - max } : { rows: all, more: 0 };
+}

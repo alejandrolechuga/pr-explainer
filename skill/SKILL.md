@@ -45,7 +45,12 @@ Shape: `PE schema`. Rules:
 
 ## 5. Build the review page
 
-`PE render <workdir>` (add `--publish` when the user's settings have a `publishCommand`; it prints the page address). It refuses a brief that fails validation. The page shows every layer, draws the diagrams, and lets the reader mark each item OK / Question / Change it, pick a verdict, and Send (if a receiver is set) or Copy as text.
+Pick one (it refuses a brief that fails validation):
+
+- The user's settings have a `publishCommand`: `PE render <workdir> --publish` — prints the page address.
+- Otherwise: `PE serve <workdir>` **in the background** — opens the page on this computer at http://127.0.0.1:7700/ and saves what they Send next to it.
+- Just a file: `PE render <workdir> --open`.
+ The page shows every layer, draws the diagrams, and lets the reader mark each item OK / Question / Change it, pick a verdict, and Send (if a receiver is set) or Copy as text.
 
 Before handing it over, open it at phone width (390px) and look: diagrams readable, nothing cut off. Fix the brief and render again if not.
 
@@ -62,4 +67,4 @@ Then stop. The rest is on the page.
 
 ## 7. Read the feedback
 
-When the reader says they sent it: `PE answers <workdir>` (needs `answersFile` in settings), or ask them to paste the copied text. Answer each Question; for each Change it, say what you would change and wait for the go-ahead before editing anything.
+When the reader says they sent it: `PE answers <workdir>` (reads what `serve` saved, or the `answersFile` in settings), or ask them to paste the copied text. Answer each Question; for each Change it, say what you would change and wait for the go-ahead before editing anything.

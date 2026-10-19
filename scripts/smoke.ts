@@ -82,10 +82,12 @@ try {
   await page.screenshot({ path: join(OUT, "phone-top.png") });
   ok("phone: summary and reading map open, deeper layers closed, no sideways scroll, brief text escaped");
 
-  const cite = page.locator(".cite").first();
-  assert.match((await cite.getAttribute("href")) ?? "", /^https:\/\/github\.com\/example\/shop\/pull\/7\/files#diff-[0-9a-f]{64}R12$/);
-  assert.match((await page.locator('.cite:has-text("(before)")').getAttribute("href")) ?? "", /L12$/);
-  ok("citations link to the PR's changed-files view, new lines R, old lines L");
+  const first = page.locator("#summary .snip").first();
+  assert.match((await first.locator("summary a").getAttribute("href")) ?? "", /^https:\/\/github\.com\/example\/shop\/pull\/7\/files#diff-[0-9a-f]{64}R12$/);
+  assert.match((await page.locator('.snip:has-text("(before)") summary a').getAttribute("href")) ?? "", /L12$/);
+  assert.equal(await first.locator("tr.hit td.tx").textContent(), "    sum += i.price * i.qty;");
+  assert.ok(await page.evaluate(() => [...document.querySelectorAll(".code")].every((c) => c.getBoundingClientRect().right <= innerWidth)), "code blocks stay inside the screen");
+  ok("code under each item: cited lines marked, links to the PR's changed-files view (R new, L old), long lines scroll inside the block");
 
   await page.click('nav a[href="#pictures"]');
   await page.waitForSelector("#viz-v-total .panel[data-panel=after] svg", { timeout: 15000 });
@@ -167,6 +169,25 @@ try {
   assert.equal(await page.locator("#send").count(), 0, "no Send button without a receiver");
   await ctx3.close();
   ok("without a receiver: Copy only");
+
+  // ---- serve: no inbox at all; Send saves next to the page
+  const { spawn } = await import("node:child_process");
+  const servePort = String(port + 1);
+  const srv = spawn(join(ROOT, "bin", "pr-explainer"), ["serve", work, "--port", servePort, "--no-open"], { env: { ...process.env, PR_EXPLAINER_CONFIG: "/nonexistent" }, stdio: "pipe" });
+  try {
+    await new Promise<void>((res, rej) => { srv.stdout.on("data", (d: Buffer) => { if (d.toString().includes("review page")) res(); }); srv.on("exit", () => rej(new Error("serve exited"))); });
+    const ctx4 = await browser.newContext();
+    page = await ctx4.newPage();
+    await page.goto(`http://127.0.0.1:${servePort}/`);
+    await page.check('input[value="questions"]');
+    await page.fill("#general", "Saved locally");
+    await page.click("#send");
+    await page.waitForFunction(() => document.getElementById("status")?.textContent?.startsWith("Sent"));
+    await ctx4.close();
+    const shown = cli("answers", work);
+    assert.match(shown, /Saved locally[\s\S]*\(verdict: questions\)/);
+    ok("serve: the page on this computer, Send saves next to it, answers reads it back");
+  } finally { srv.kill(); }
 
   assert.deepEqual(errors, [], "no script errors");
   server.close();

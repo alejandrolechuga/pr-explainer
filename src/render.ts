@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import type { Brief, CitationT } from "./brief.js";
 import type { PrContext } from "./context.js";
-import type { DiffFile } from "./diff.js";
+import { diffRows, excerpt, type DiffFile, type Row } from "./diff.js";
 
 export interface RenderOptions {
   /** where "Send" goes: "json:<url>" posts JSON, "form:<url>" submits a plain form; none = copy only */
@@ -12,6 +12,8 @@ export interface RenderOptions {
   formId: string;
   /** longest note the receiver keeps; the page warns before sending more */
   noteLimit?: number;
+  /** the raw diff, so each code citation can show the lines it points at */
+  diffText?: string;
   /** validator warnings, shown in the footer */
   warnings?: string[];
 }
@@ -62,6 +64,23 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return a;
   };
 
+  const rows = o.diffText ? diffRows(o.diffText) : new Map<string, Row[]>();
+  const snippet = (c: Extract<CitationT, { kind: "code" }>): string | null => {
+    const ex = excerpt(rows.get(c.file), c.side, c.line, c.endLine ?? c.line);
+    if (!ex.rows.length) return null;
+    const lo = c.line, hi = c.endLine ?? c.line;
+    const label = `${c.file}:${lo}${hi !== lo ? `–${hi}` : ""}${c.side === "old" ? " (before)" : ""}`;
+    const href = fileUrl(c.file, c.side, lo, hi);
+    const body = ex.rows.map((r) => {
+      const n = c.side === "new" ? r.new : r.old;
+      const hit = n !== undefined && n >= lo && n <= hi;
+      const cls = r.kind === "+" ? "add" : r.kind === "-" ? "del" : "ctx";
+      return `<tr class="${cls}${hit ? " hit" : ""}"><td class="ln">${r.kind === "-" ? r.old : r.new}</td><td class="mk">${r.kind === " " ? "" : r.kind === "-" ? "−" : "+"}</td><td class="tx">${esc(r.text) || " "}</td></tr>`;
+    }).join("");
+    return `<details class="snip" open><summary><span class="file">${esc(label)}</span>${href ? `<a href="${esc(href)}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}</summary>
+      <div class="code"><table>${body}</table></div>${ex.more ? `<p class="more">${ex.more} more line${ex.more === 1 ? "" : "s"}${href ? ` — <a href="${esc(href)}" target="_blank" rel="noopener">see all on GitHub</a>` : ""}</p>` : ""}</details>`;
+  };
+
   const cite = (c: CitationT): string => {
     if (c.kind === "code") {
       const label = `${c.file}:${c.line}${c.endLine && c.endLine !== c.line ? `–${c.endLine}` : ""}${c.side === "old" ? " (before)" : ""}`;
@@ -74,8 +93,11 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   };
   const cites = (cs: CitationT[]): string => {
     const quotes = cs.filter((c) => c.kind === "source").map(cite).join("");
-    const code = cs.filter((c) => c.kind === "code").map(cite).join("");
-    return `${quotes ? `<div class="quotes">${quotes}</div>` : ""}${code ? `<div class="cites">${code}</div>` : ""}`;
+    const codeCs = cs.filter((c): c is Extract<CitationT, { kind: "code" }> => c.kind === "code");
+    const snips = codeCs.map((c) => snippet(c));
+    const shown = snips.filter((x): x is string => !!x).join("");
+    const chips = codeCs.filter((_, i) => !snips[i]).map(cite).join("");
+    return `${quotes ? `<div class="quotes">${quotes}</div>` : ""}${shown ? `<div class="snips">${shown}</div>` : ""}${chips ? `<div class="cites">${chips}</div>` : ""}`;
   };
 
   const basis = (b: "stated" | "inferred"): string =>
@@ -274,13 +296,13 @@ ${layer("options", 7, "What we could change", `${brief.options.length} option${b
 const CSS = `
 :root{--bg:#f7f6f2;--surface:#fff;--ink:#1d1e22;--muted:#5f5e58;--line:#e2dfd7;--accent:#2f5bd3;--accent-ink:#fff;
 --high:#b42318;--high-bg:#fdecea;--medium:#9a4a06;--medium-bg:#fff2e0;--low:#3d5f12;--low-bg:#eef6e2;
---stated:#1f6b4f;--stated-bg:#e3f4ec;--guess:#7a5b00;--guess-bg:#fff6d6;--add:#1f7a3a;--del:#b42318;--code:#f0eee8;color-scheme:light}
+--stated:#1f6b4f;--stated-bg:#e3f4ec;--guess:#7a5b00;--guess-bg:#fff6d6;--add:#1f7a3a;--del:#b42318;--code:#f0eee8;--code-bg:#fbfaf7;--add-bg:#e6f4ea;--del-bg:#fdecea;color-scheme:light}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14151a;--surface:#1c1e24;--ink:#e9e7e2;--muted:#a3a19a;--line:#2e3139;--accent:#8ea6ff;--accent-ink:#0d0f14;
 --high:#ff8f84;--high-bg:#3a1d1b;--medium:#ffb870;--medium-bg:#3a2a16;--low:#a8d277;--low-bg:#1f2e14;
---stated:#7fd7b0;--stated-bg:#14322a;--guess:#f0cf6a;--guess-bg:#3a3214;--add:#7fd38f;--del:#ff8f84;--code:#262931;color-scheme:dark}}
+--stated:#7fd7b0;--stated-bg:#14322a;--guess:#f0cf6a;--guess-bg:#3a3214;--add:#7fd38f;--del:#ff8f84;--code:#262931;--code-bg:#17191e;--add-bg:#173022;--del-bg:#3a1d1b;color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#14151a;--surface:#1c1e24;--ink:#e9e7e2;--muted:#a3a19a;--line:#2e3139;--accent:#8ea6ff;--accent-ink:#0d0f14;
 --high:#ff8f84;--high-bg:#3a1d1b;--medium:#ffb870;--medium-bg:#3a2a16;--low:#a8d277;--low-bg:#1f2e14;
---stated:#7fd7b0;--stated-bg:#14322a;--guess:#f0cf6a;--guess-bg:#3a3214;--add:#7fd38f;--del:#ff8f84;--code:#262931;color-scheme:dark}
+--stated:#7fd7b0;--stated-bg:#14322a;--guess:#f0cf6a;--guess-bg:#3a3214;--add:#7fd38f;--del:#ff8f84;--code:#262931;--code-bg:#17191e;--add-bg:#173022;--del-bg:#3a1d1b;color-scheme:dark}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow-wrap:anywhere}
@@ -341,6 +363,22 @@ p{margin:6px 0}
 .cite{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);color:var(--ink);text-decoration:none;padding:3px 7px;border-radius:5px}
 a.cite:hover{outline:1px solid var(--accent)}
 .empty{color:var(--muted);font-style:italic}
+.snips{display:grid;gap:8px;margin-top:10px}
+.snip{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--code-bg)}
+.snip>summary{cursor:pointer;display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 10px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);color:var(--ink)}
+.snip>summary .file{overflow-wrap:anywhere}
+.snip>summary a{flex:none;font-family:system-ui,sans-serif;font-size:12px;text-decoration:none}
+.code{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.code table{border-collapse:collapse;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;min-width:100%;tab-size:2}
+.code td{padding:0 6px;white-space:pre;vertical-align:top}
+.code td.ln{color:var(--muted);text-align:right;user-select:none;min-width:2.6em;padding:0 4px;opacity:.75}
+.code td.mk{user-select:none;width:1em;padding:0 2px;text-align:center}
+.code td.tx{width:100%;padding-right:12px}
+.code tr.add{background:var(--add-bg)}.code tr.add td.mk{color:var(--add)}
+.code tr.del{background:var(--del-bg)}.code tr.del td.mk{color:var(--del)}
+.code tr.hit td.ln{opacity:1;color:var(--ink);font-weight:600}
+@media (max-width:560px){.code td.tx{white-space:pre-wrap;overflow-wrap:anywhere}}
+.more{font-size:12px;color:var(--muted);margin:0;padding:4px 10px;border-top:1px solid var(--line)}
 .viz{margin:0 0 12px;border:1px solid var(--line);border-radius:10px;padding:12px}
 .tabs{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .tabs button{border:0;background:transparent;color:var(--ink);font:inherit;font-size:13px;padding:5px 12px;cursor:pointer;min-height:32px}

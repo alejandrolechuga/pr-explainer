@@ -7,10 +7,11 @@ import { esc, fileAnchor, formIdFor, renderPage } from "../src/render.js";
 
 const dir = new URL("./fixtures/workdir/", import.meta.url);
 const ctx = JSON.parse(readFileSync(new URL("context.json", dir), "utf8")) as PrContext;
-const files = parseDiff(readFileSync(new URL("diff.patch", dir), "utf8"));
+const diffText = readFileSync(new URL("diff.patch", dir), "utf8");
+const files = parseDiff(diffText);
 const brief = BriefSchema.parse(JSON.parse(readFileSync(new URL("brief.json", dir), "utf8")));
 const page = (over: Partial<typeof brief> = {}, submit?: string) =>
-  renderPage({ ...brief, ...over }, ctx, files, { formId: "pr-shop-7", ...(submit ? { submit } : {}) });
+  renderPage({ ...brief, ...over }, ctx, files, { formId: "pr-shop-7", diffText, ...(submit ? { submit } : {}) });
 
 describe("renderPage", () => {
   it("escapes everything that comes from the brief", () => {
@@ -30,6 +31,7 @@ describe("renderPage", () => {
   it("links files to GitHub's changed-files anchors", () => {
     expect(fileAnchor("src/cart.ts")).toMatch(/^diff-[0-9a-f]{64}$/);
     expect(page()).toContain(`https://github.com/example/shop/pull/7/files#${fileAnchor("src/cart.ts")}R14-R16`);
+    expect(renderPage(brief, ctx, files, { formId: "x" })).toContain(`files#${fileAnchor("src/cart.ts")}R14-R16`);
   });
 
   it("has no links without a PR address", () => {
@@ -58,6 +60,21 @@ describe("renderPage", () => {
     const html = page();
     const n = brief.slices.length + brief.decisions.length + brief.visuals.length + brief.mismatches.length + brief.risks.length + brief.options.length;
     expect(html.match(/class="fb"/g)?.length).toBe(n);
+  });
+});
+
+describe("code on the page", () => {
+  it("shows the cited lines, escaped, with the cited ones marked", () => {
+    const html = page();
+    expect(html).toContain('<tr class="add hit"><td class="ln">12</td><td class="mk">+</td><td class="tx">    sum += i.price * i.qty;</td></tr>');
+    expect(html).toContain('<tr class="del"><td class="ln">12</td>');
+    expect(html).toMatch(/src\/cart\.ts:14–16<\/span><a href="https:\/\/github\.com\/example\/shop\/pull\/7\/files#diff-[0-9a-f]{64}R14-R16"/);
+  });
+
+  it("falls back to a plain reference when there is no code to show", () => {
+    const html = renderPage(brief, ctx, files, { formId: "x" });
+    expect(html).not.toContain('class="snip"');
+    expect(html).toContain('class="cite"');
   });
 });
 
