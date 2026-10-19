@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { Brief, CitationT } from "./brief.js";
 import type { PrContext } from "./context.js";
 import { diffRows, excerpt, type DiffFile, type Row } from "./diff.js";
+import { highlightLines } from "./highlight.js";
 
 export interface RenderOptions {
   /** where "Send" goes: "json:<url>" posts JSON, "form:<url>" submits a plain form; none = copy only */
@@ -71,11 +72,12 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     const lo = c.line, hi = c.endLine ?? c.line;
     const label = `${c.file}:${lo}${hi !== lo ? `–${hi}` : ""}${c.side === "old" ? " (before)" : ""}`;
     const href = fileUrl(c.file, c.side, lo, hi);
-    const body = ex.rows.map((r) => {
+    const colored = highlightLines(ex.rows.map((r) => r.text), c.file);
+    const body = ex.rows.map((r, i) => {
       const n = c.side === "new" ? r.new : r.old;
       const hit = n !== undefined && n >= lo && n <= hi;
-      const cls = r.kind === "+" ? "add" : r.kind === "-" ? "del" : "ctx";
-      return `<tr class="${cls}${hit ? " hit" : ""}"><td class="ln">${r.kind === "-" ? r.old : r.new}</td><td class="mk">${r.kind === " " ? "" : r.kind === "-" ? "−" : "+"}</td><td class="tx">${esc(r.text) || " "}</td></tr>`;
+      const cls = r.kind === "+" ? "row-add" : r.kind === "-" ? "row-del" : "row-ctx";
+      return `<tr class="${cls}${hit ? " hit" : ""}"><td class="ln">${r.kind === "-" ? r.old : r.new}</td><td class="mk">${r.kind === " " ? "" : r.kind === "-" ? "−" : "+"}</td><td class="tx">${colored[i] || " "}</td></tr>`;
     }).join("");
     return `<details class="snip" open><summary><span class="file">${esc(label)}</span>${href ? `<a href="${esc(href)}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}</summary>
       <div class="code"><table>${body}</table></div>${ex.more ? `<p class="more">${ex.more} more line${ex.more === 1 ? "" : "s"}${href ? ` — <a href="${esc(href)}" target="_blank" rel="noopener">see all on GitHub</a>` : ""}</p>` : ""}</details>`;
@@ -296,13 +298,13 @@ ${layer("options", 7, "What we could change", `${brief.options.length} option${b
 const CSS = `
 :root{--bg:#f7f6f2;--surface:#fff;--ink:#1d1e22;--muted:#5f5e58;--line:#e2dfd7;--accent:#2f5bd3;--accent-ink:#fff;
 --high:#b42318;--high-bg:#fdecea;--medium:#9a4a06;--medium-bg:#fff2e0;--low:#3d5f12;--low-bg:#eef6e2;
---stated:#1f6b4f;--stated-bg:#e3f4ec;--guess:#7a5b00;--guess-bg:#fff6d6;--add:#1f7a3a;--del:#b42318;--code:#f0eee8;--code-bg:#fbfaf7;--add-bg:#e6f4ea;--del-bg:#fdecea;color-scheme:light}
+--stated:#1f6b4f;--stated-bg:#e3f4ec;--guess:#7a5b00;--guess-bg:#fff6d6;--add:#1f7a3a;--del:#b42318;--code:#f0eee8;--code-bg:#fbfaf7;--add-bg:#e6f4ea;--del-bg:#fdecea;--hl-kw:#cf222e;--hl-str:#0a3069;--hl-com:#6e7781;--hl-num:#0550ae;--hl-fn:#8250df;--hl-type:#953800;--hl-tag:#116329;color-scheme:light}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14151a;--surface:#1c1e24;--ink:#e9e7e2;--muted:#a3a19a;--line:#2e3139;--accent:#8ea6ff;--accent-ink:#0d0f14;
 --high:#ff8f84;--high-bg:#3a1d1b;--medium:#ffb870;--medium-bg:#3a2a16;--low:#a8d277;--low-bg:#1f2e14;
---stated:#7fd7b0;--stated-bg:#14322a;--guess:#f0cf6a;--guess-bg:#3a3214;--add:#7fd38f;--del:#ff8f84;--code:#262931;--code-bg:#17191e;--add-bg:#173022;--del-bg:#3a1d1b;color-scheme:dark}}
+--stated:#7fd7b0;--stated-bg:#14322a;--guess:#f0cf6a;--guess-bg:#3a3214;--add:#7fd38f;--del:#ff8f84;--code:#262931;--code-bg:#17191e;--add-bg:#173022;--del-bg:#3a1d1b;--hl-kw:#ff7b72;--hl-str:#a5d6ff;--hl-com:#8b949e;--hl-num:#79c0ff;--hl-fn:#d2a8ff;--hl-type:#ffa657;--hl-tag:#7ee787;color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#14151a;--surface:#1c1e24;--ink:#e9e7e2;--muted:#a3a19a;--line:#2e3139;--accent:#8ea6ff;--accent-ink:#0d0f14;
 --high:#ff8f84;--high-bg:#3a1d1b;--medium:#ffb870;--medium-bg:#3a2a16;--low:#a8d277;--low-bg:#1f2e14;
---stated:#7fd7b0;--stated-bg:#14322a;--guess:#f0cf6a;--guess-bg:#3a3214;--add:#7fd38f;--del:#ff8f84;--code:#262931;--code-bg:#17191e;--add-bg:#173022;--del-bg:#3a1d1b;color-scheme:dark}
+--stated:#7fd7b0;--stated-bg:#14322a;--guess:#f0cf6a;--guess-bg:#3a3214;--add:#7fd38f;--del:#ff8f84;--code:#262931;--code-bg:#17191e;--add-bg:#173022;--del-bg:#3a1d1b;--hl-kw:#ff7b72;--hl-str:#a5d6ff;--hl-com:#8b949e;--hl-num:#79c0ff;--hl-fn:#d2a8ff;--hl-type:#ffa657;--hl-tag:#7ee787;color-scheme:dark}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow-wrap:anywhere}
@@ -374,10 +376,18 @@ a.cite:hover{outline:1px solid var(--accent)}
 .code td.ln{color:var(--muted);text-align:right;user-select:none;min-width:2.6em;padding:0 4px;opacity:.75}
 .code td.mk{user-select:none;width:1em;padding:0 2px;text-align:center}
 .code td.tx{width:100%;padding-right:12px}
-.code tr.add{background:var(--add-bg)}.code tr.add td.mk{color:var(--add)}
-.code tr.del{background:var(--del-bg)}.code tr.del td.mk{color:var(--del)}
+.code tr.row-add{background:var(--add-bg)}.code tr.row-add td.mk{color:var(--add)}
+.code tr.row-del{background:var(--del-bg)}.code tr.row-del td.mk{color:var(--del)}
 .code tr.hit td.ln{opacity:1;color:var(--ink);font-weight:600}
 @media (max-width:560px){.code td.tx{white-space:pre-wrap;overflow-wrap:anywhere}}
+.code .hljs-keyword,.code .hljs-meta .hljs-keyword,.code .hljs-doctag,.code .hljs-template-tag,.code .hljs-variable.language_{color:var(--hl-kw)}
+.code .hljs-string,.code .hljs-meta .hljs-string,.code .hljs-template-variable{color:var(--hl-str)}
+.code .hljs-comment,.code .hljs-quote,.code .hljs-meta{color:var(--hl-com)}.code .hljs-comment{font-style:italic}
+.code .hljs-number,.code .hljs-literal,.code .hljs-attr,.code .hljs-attribute,.code .hljs-property,.code .hljs-selector-attr,.code .hljs-selector-class,.code .hljs-selector-id,.code .hljs-symbol,.code .hljs-bullet,.code .hljs-section{color:var(--hl-num)}
+.code .hljs-title,.code .hljs-title.function_,.code .hljs-title.class_{color:var(--hl-fn)}
+.code .hljs-type,.code .hljs-built_in,.code .hljs-variable,.code .hljs-params .hljs-type{color:var(--hl-type)}
+.code .hljs-regexp,.code .hljs-tag,.code .hljs-name,.code .hljs-selector-tag,.code .hljs-addition{color:var(--hl-tag)}
+.code .hljs-emphasis{font-style:italic}.code .hljs-strong{font-weight:600}
 .more{font-size:12px;color:var(--muted);margin:0;padding:4px 10px;border-top:1px solid var(--line)}
 .viz{margin:0 0 12px;border:1px solid var(--line);border-radius:10px;padding:12px}
 .tabs{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}

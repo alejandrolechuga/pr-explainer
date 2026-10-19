@@ -15,6 +15,7 @@
     "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "tsx": "^4.20.0",
     "zod": "4.6.7"
   },

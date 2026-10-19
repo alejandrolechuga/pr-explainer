@@ -66,9 +66,15 @@ describe("renderPage", () => {
 describe("code on the page", () => {
   it("shows the cited lines, escaped, with the cited ones marked", () => {
     const html = page();
-    expect(html).toContain('<tr class="add hit"><td class="ln">12</td><td class="mk">+</td><td class="tx">    sum += i.price * i.qty;</td></tr>');
-    expect(html).toContain('<tr class="del"><td class="ln">12</td>');
+    expect(html).toContain('<tr class="row-add hit"><td class="ln">12</td><td class="mk">+</td><td class="tx">    sum += i.<span class="hljs-property">price</span> * i.<span class="hljs-property">qty</span>;</td></tr>');
+    expect(html).toContain('<tr class="row-del"><td class="ln">12</td>');
     expect(html).toMatch(/src\/cart\.ts:14–16<\/span><a href="https:\/\/github\.com\/example\/shop\/pull\/7\/files#diff-[0-9a-f]{64}R14-R16"/);
+  });
+
+  it("code text keeps the page's ink colour, not the +/− counter colour", () => {
+    const css = /<style>([^]*?)<\/style>/.exec(page())![1]!;
+    expect(css).not.toMatch(/\.code tr\.(add|del)\b/);
+    expect(page()).not.toMatch(/<tr class="(add|del)[ "]/);
   });
 
   it("falls back to a plain reference when there is no code to show", () => {
