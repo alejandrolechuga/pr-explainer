@@ -34,7 +34,7 @@ Shape: `PE schema`. Rules:
 - **slices**: group changed files by concern (not by folder). Every changed file in exactly one slice where possible; `readOrder` 1 = read first (usually the core idea, then its callers, then tests and cleanup). Risk per slice.
 - **decisions**: the choices that shaped the PR. `basis: "stated"` ONLY when the author wrote the reason down; then add a `source` citation with an exact quote (intent record, PR body, commit, issue, doc, or `code-comment` for a comment the PR adds). Otherwise `basis: "inferred"` — it will be shown as a guess. Never upgrade a guess to "stated" to pass the check.
 - **mismatches**: places where the code does something other than what the intent record, PR body or issue says. These are the most useful findings; look for them on purpose.
-- **visuals**: add a Mermaid diagram only when a shape changed (flow, data, structure, states, sequence). Give `before` too when the old shape differs. Skip when a picture adds nothing.
+- **visuals**: add a Mermaid diagram only when a shape changed (flow, data, structure, states, sequence). Give `before` too when the old shape differs. Skip when a picture adds nothing. Pages are read on phones: draw top to bottom (`flowchart TD`), keep labels short, break lines with `<br/>` (not `\n`), and keep it under ~12 boxes.
 - **risks**: concrete scenario ("when X, then Y breaks"), severity, and at least one `code` citation inside a changed hunk. Trace each one through the code before writing it; a risk you have not traced is not a risk, leave it out.
 - **options**: changes the reader could ask for, each with its tradeoff, linked to risk/decision ids.
 - Code citations: `{ "kind": "code", "file", "side": "new"|"old", "line" }` — `new` for lines after the change, `old` for removed lines. Lines must sit inside a changed hunk.
@@ -43,12 +43,23 @@ Shape: `PE schema`. Rules:
 
 `PE validate <workdir>` — fix every ERROR and re-run until it prints no errors. Warnings may stay; mention them if they matter (for example "no intent record, the whys are guesses").
 
-## 5. Tell the reader (layered)
+## 5. Build the review page
 
-Until the review page exists, answer in chat, top layer first, and stop after layer 2 unless asked:
+`PE render <workdir>` (add `--publish` when the user's settings have a `publishCommand`; it prints the page address). It refuses a brief that fails validation. The page shows every layer, draws the diagrams, and lets the reader mark each item OK / Question / Change it, pick a verdict, and Send (if a receiver is set) or Copy as text.
 
-1. **In 30 seconds** — intent paragraph + 2–4 before→after lines. Say if there is no intent record.
-2. **Reading map** — slices in read order: title, one line, risk, file count.
-3. On request or when short: **Why** (mark guesses as guesses), **Doesn't match the plan** (mismatches), **Pictures** (describe the diagram in words in the terminal), **What could go wrong**, **What we could change**.
+Before handing it over, open it at phone width (390px) and look: diagrams readable, nothing cut off. Fix the brief and render again if not.
 
-End by offering the next layers by name. Keep the brief in the work folder; later layers and the review page read it.
+## 6. Tell the reader
+
+In chat, keep it short, top layer first:
+
+1. The page link (or file path).
+2. **In 30 seconds** — intent paragraph + 2–4 before→after lines. Say if there is no intent record.
+3. **Reading map** — slices in read order, one line each.
+4. The one or two risks that matter most, if any are high or medium.
+
+Then stop. The rest is on the page.
+
+## 7. Read the feedback
+
+When the reader says they sent it: `PE answers <workdir>` (needs `answersFile` in settings), or ask them to paste the copied text. Answer each Question; for each Change it, say what you would change and wait for the go-ahead before editing anything.

@@ -3,7 +3,7 @@
 export interface PrContext {
   version: 1;
   repo: string; // owner/name, or the folder name for a local branch
-  pr: { number?: number; title: string; base: string; head: string; url?: string };
+  pr: { number?: number; title: string; base: string; head: string; url?: string; headSha?: string; baseSha?: string };
   body: string;
   intentRecord: string | null;
   commits: { sha: string; message: string }[];

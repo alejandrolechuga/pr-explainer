@@ -52,12 +52,40 @@ pr-explainer gather <pr-number|url> [--repo owner/name]
 pr-explainer gather --base main              # current branch, no PR needed
 pr-explainer lines <workdir> [file]          # diff with old/new line numbers
 pr-explainer validate <workdir> [--json]
+pr-explainer render <workdir> [--submit json:<url>|form:<url>] [--form-id <id>] [--publish]
+pr-explainer answers <workdir|form-id>       # feedback sent from the page
 pr-explainer schema                          # JSON schema of brief.json
 pr-explainer template                        # intent record for PR bodies
 pr-explainer install-skill [--dir <path>]
 ```
 
 Work folders go to `~/.cache/pr-explainer/<repo>-<pr>/` (override with `PR_EXPLAINER_HOME`).
+
+## The review page
+
+`render` writes `<workdir>/page/index.html`: one self-contained page (diagrams drawn with Mermaid from a CDN) that works on a phone. Summary and reading map open first; why, pictures, plan vs code, risks and options open on a tap. Every item has **OK / Question / Change it** with a note; the reader picks a verdict and sends it or copies it as text. A draft is kept in the browser until sent.
+
+Sending is up to you:
+
+- `json:<url>` — POSTs `{ page, answers, comment, items }` (CORS is the receiver's job)
+- `form:<url>` — submits a plain form with `id`, `answer` (the verdict) and `note` (the whole review as text)
+- nothing — Copy as text only
+
+## Settings
+
+Personal settings live outside the repo, in `~/.config/pr-explainer/config.json` (or `$PR_EXPLAINER_CONFIG`):
+
+```json
+{
+  "submit": "json:https://example.com/feedback",
+  "formIdPrefix": "pr-",
+  "noteLimit": 4000,
+  "answersFile": "~/reviews/answers.jsonl",
+  "publishCommand": "rsync -a {dir}/ me@host:/var/www/reviews/{name}/ && echo https://host/reviews/{name}/"
+}
+```
+
+`publishCommand` runs after `render --publish`, with `{name}` (feedback id), `{dir}` and `{file}` filled in and shell-quoted. `answersFile` is a JSON-lines file your receiver appends to; entries whose `id` or `page` matches the feedback id are shown by `answers`.
 
 ## Intent records
 
@@ -74,12 +102,11 @@ written from what was actually decided; never invent reasons after the fact.
 
 ```sh
 npm install
-npm run qa      # typecheck + tests
+npm run qa      # typecheck, tests, and a browser run of the review page (needs Chrome; CHROME_PATH to point at it)
 ```
 
 ## Roadmap
 
-- Review page: the layers as a web page, with rendered diagrams and a feedback form
 - Before/after screenshots for UI changes
 - Feedback from the page turned into PR review comments
 
