@@ -1,0 +1,134 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import type { PrContext } from "../src/context.js";
+import { parseDiff } from "../src/diff.js";
+import { validateBrief } from "../src/validate.js";
+
+const files = parseDiff(readFileSync(new URL("./fixtures/sample.patch", import.meta.url), "utf8"));
+
+const ctx: PrContext = {
+  version: 1,
+  repo: "o/r",
+  pr: { number: 1, title: "Bulk discount", base: "main", head: "discount" },
+  body: "## Intent record\n**Goal:** Give 10% off orders over $100.",
+  intentRecord: "**Goal:** Give 10% off orders over $100.",
+  commits: [{ sha: "abc123", message: "Count quantity in cart total" }],
+  issueRefs: [],
+  issues: [],
+  docs: [],
+};
+
+const code = (file: string, line: number, side: "new" | "old" = "new") => ({ kind: "code" as const, file, line, side });
+
+function goodBrief() {
+  return {
+    version: 1,
+    pr: { repo: "o/r", number: 1, title: "Bulk discount", base: "main", head: "discount" },
+    intent: {
+      summary: "Orders over $100 get 10% off, and totals count quantity.",
+      basis: "stated",
+      evidence: [{ kind: "source", source: "intent-record", quote: "give 10%   off orders over $100" }] as object[],
+    },
+    beforeAfter: [{ area: "Cart total", before: "Ignored quantity", after: "Price times quantity", evidence: [code("src/cart.ts", 13)] }],
+    slices: [
+      { id: "s1", title: "Total", summary: "math", files: ["src/cart.ts", "src/new.ts"], risk: "medium", readOrder: 1 },
+      { id: "s2", title: "Cleanup", summary: "files", files: ["old.txt", "b/name.ts", "logo.png"], risk: "low", readOrder: 2 },
+    ],
+    decisions: [{
+      id: "d1", decision: "Discount after summing", why: "simpler", basis: "inferred",
+      evidence: [code("src/cart.ts", 15)],
+    }],
+    risks: [{ id: "r1", title: "Constants unused", scenario: "Change DISCOUNT; cart still uses 0.9", severity: "low", evidence: [code("src/new.ts", 1)] }],
+    options: [{ id: "o1", change: "Import DISCOUNT in cart", tradeoff: "one more import", relatesTo: ["r1"] }],
+  };
+}
+
+describe("validateBrief", () => {
+  it("passes a brief whose citations all exist", () => {
+    const r = validateBrief(goodBrief(), files, ctx);
+    expect(r.findings).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
+
+  it("reports schema problems with their path", () => {
+    const b = goodBrief() as Record<string, unknown>;
+    delete b.intent;
+    const r = validateBrief(b, files, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]?.where).toBe("intent");
+  });
+
+  it("rejects lines outside the changed hunks", () => {
+    const b = goodBrief();
+    b.beforeAfter[0]!.evidence = [code("src/cart.ts", 40)];
+    const r = validateBrief(b, files, ctx);
+    expect(r.findings.map((f) => f.message)).toContain("src/cart.ts:40 (new side) is outside every changed hunk");
+  });
+
+  it("rejects quotes the author never wrote", () => {
+    const b = goodBrief();
+    b.intent.evidence = [{ kind: "source", source: "intent-record", quote: "make checkout faster" }];
+    const r = validateBrief(b, files, ctx);
+    expect(r.errors).toBe(1);
+    expect(r.findings[0]?.message).toMatch(/quote not found/);
+  });
+
+  it("rejects 'stated' claims that only cite code", () => {
+    const b = goodBrief();
+    b.decisions[0]!.basis = "stated";
+    const r = validateBrief(b, files, ctx);
+    expect(r.findings.some((f) => f.where === "decisions.d1" && /no quote/.test(f.message))).toBe(true);
+  });
+
+  it("requires every changed file in a slice and only changed files", () => {
+    const b = goodBrief();
+    b.slices[1]!.files = ["old.txt", "b/name.ts", "nope.ts"];
+    const msgs = validateBrief(b, files, ctx).findings.map((f) => f.message);
+    expect(msgs).toContain("nope.ts is not a changed file");
+    expect(msgs).toContain("changed file logo.png is in no slice");
+  });
+
+  it("requires code evidence for risks and valid option links", () => {
+    const b = goodBrief();
+    b.risks[0]!.evidence = [{ kind: "source", source: "commit", quote: "count quantity" } as never];
+    b.options[0]!.relatesTo = ["s1"];
+    const msgs = validateBrief(b, files, ctx).findings.map((f) => f.message);
+    expect(msgs).toContain("a risk needs at least one file:line citation");
+    expect(msgs).toContain('relatesTo "s1" is not a risk or decision id');
+  });
+
+  it("warns when there is no intent record", () => {
+    const b = goodBrief();
+    b.intent.basis = "inferred";
+    b.intent.evidence = [code("src/cart.ts", 15)];
+    const r = validateBrief(b, files, { ...ctx, intentRecord: null });
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toBe(1);
+  });
+
+  it("accepts old-side citations for deleted lines and renamed files", () => {
+    const b = goodBrief();
+    b.beforeAfter[0]!.evidence = [code("src/cart.ts", 12, "old"), code("old.txt", 1, "old")];
+    expect(validateBrief(b, files, ctx).ok).toBe(true);
+  });
+});
+
+describe("code-comment quotes", () => {
+  const diffText = readFileSync(new URL("./fixtures/sample.patch", import.meta.url), "utf8");
+  it("finds words on added lines, and not on removed ones", () => {
+    const b = goodBrief();
+    b.decisions[0]!.basis = "stated";
+    b.decisions[0]!.evidence = [{ kind: "source", source: "code-comment", quote: "sum = sum * 0.9" } as never];
+    expect(validateBrief(b, files, ctx, diffText).ok).toBe(true);
+    b.decisions[0]!.evidence = [{ kind: "source", source: "code-comment", quote: "sum += i.price;" } as never];
+    expect(validateBrief(b, files, ctx, diffText).findings[0]?.message).toMatch(/quote not found in code-comment/);
+  });
+});
+
+describe("line ranges", () => {
+  it("checks both ends of a range", () => {
+    const b = goodBrief();
+    b.beforeAfter[0]!.evidence = [{ ...code("src/cart.ts", 13), endLine: 30 } as never];
+    expect(validateBrief(b, files, ctx).findings.map((f) => f.message)).toEqual(["src/cart.ts:30 (new side) is outside every changed hunk"]);
+  });
+});

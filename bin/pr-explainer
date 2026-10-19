@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs the CLI from any folder; the caller's folder stays the working directory.
+self="$0"
+while [ -L "$self" ]; do
+  link="$(readlink "$self")"
+  case "$link" in /*) self="$link" ;; *) self="$(dirname "$self")/$link" ;; esac
+done
+here="$(cd "$(dirname "$self")/.." && pwd)"
+tsx="$here/node_modules/.bin/tsx"
+[ -x "$tsx" ] || tsx="$(command -v tsx)" || { echo "pr-explainer: tsx not found; run npm install in $here" >&2; exit 1; }
+exec "$tsx" "$here/src/cli.ts" "$@"

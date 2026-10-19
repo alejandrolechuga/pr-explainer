@@ -1,0 +1,41 @@
+{
+  "name": "pr-explainer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Explains a pull request in layers: intent, before and after, slices, why, pictures, risks, options.",
+  "bin": {
+    "pr-explainer": "bin/pr-explainer"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "qa": "npm run typecheck && npm test",
+    "cli": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.20.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "5.9.3",
+    "vitest": "^5.0.4"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alejandrolechuga/pr-explainer.git"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skill",
+    "templates",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
