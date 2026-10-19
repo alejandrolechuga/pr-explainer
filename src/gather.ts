@@ -38,10 +38,10 @@ export function gatherPr(prRef: string, repoArg?: string): Gathered {
   const repo = repoArg ?? run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim();
   const pr = JSON.parse(run("gh", [
     "pr", "view", prRef, "--repo", repo,
-    "--json", "number,title,body,baseRefName,headRefName,headRefOid,url,commits",
+    "--json", "number,title,body,baseRefName,headRefName,headRefOid,baseRefOid,url,commits",
   ])) as {
     number: number; title: string; body: string; baseRefName: string; headRefName: string;
-    headRefOid: string; url: string; commits: { oid: string; messageHeadline: string; messageBody: string }[];
+    headRefOid: string; baseRefOid: string; url: string; commits: { oid: string; messageHeadline: string; messageBody: string }[];
   };
   const diff = run("gh", ["pr", "diff", String(pr.number), "--repo", repo]);
 
@@ -57,7 +57,7 @@ export function gatherPr(prRef: string, repoArg?: string): Gathered {
   const context: PrContext = {
     version: 1,
     repo,
-    pr: { number: pr.number, title: pr.title, base: pr.baseRefName, head: pr.headRefName, url: pr.url },
+    pr: { number: pr.number, title: pr.title, base: pr.baseRefName, head: pr.headRefName, url: pr.url, headSha: pr.headRefOid, baseSha: pr.baseRefOid },
     body,
     intentRecord: extractIntentRecord(body),
     commits,

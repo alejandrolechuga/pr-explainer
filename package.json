@@ -10,15 +10,18 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "qa": "npm run typecheck && npm test",
-    "cli": "tsx src/cli.ts"
+    "qa": "npm run typecheck && npm test && npm run smoke",
+    "cli": "tsx src/cli.ts",
+    "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "tsx": "^4.20.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "playwright-core": "^1.56.1",
     "typescript": "5.9.3",
     "vitest": "^5.0.4"
   },

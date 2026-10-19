@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "pr": { "repo": "example/shop", "number": 7, "title": "Bulk discount <b>& friends</b>", "base": "main", "head": "bulk-discount" },
+  "intent": {
+    "summary": "Orders over $100 get 10% off, and the cart total now multiplies price by quantity instead of ignoring it.",
+    "basis": "stated",
+    "evidence": [{ "kind": "source", "source": "intent-record", "quote": "Give 10% off orders over $100" }]
+  },
+  "beforeAfter": [
+    { "area": "Cart total", "before": "Two of an item counted once.", "after": "Price times quantity.", "evidence": [{ "kind": "code", "file": "src/cart.ts", "line": 12 }, { "kind": "code", "file": "src/cart.ts", "side": "old", "line": 12 }] },
+    { "area": "Big orders", "before": "No discount.", "after": "10% off above $100.", "evidence": [{ "kind": "code", "file": "src/cart.ts", "line": 14, "endLine": 16 }] }
+  ],
+  "slices": [
+    { "id": "s-total", "title": "Cart math", "summary": "Quantity and the discount.", "files": ["src/cart.ts", "src/new.ts"], "risk": "medium", "readOrder": 1 },
+    { "id": "s-cleanup", "title": "Cleanup", "summary": "Removed and renamed files, new logo.", "files": ["old.txt", "b/name.ts", "logo.png"], "risk": "low", "readOrder": 2 }
+  ],
+  "decisions": [
+    { "id": "d-after-sum", "decision": "Discount after summing", "why": "Per-item discounts round differently.", "basis": "stated", "alternatives": ["Discount each item"], "evidence": [{ "kind": "source", "source": "intent-record", "quote": "a per-item discount would round differently" }] },
+    { "id": "d-constants", "decision": "Constants in their own file", "why": "Probably so other modules can share them.", "basis": "inferred", "evidence": [{ "kind": "code", "file": "src/new.ts", "line": 1 }] }
+  ],
+  "visuals": [
+    { "id": "v-total", "title": "How the total is computed", "kind": "flow", "caption": "The discount is a new last step.",
+      "before": "flowchart LR\n  A[Items] --> B[Sum prices] --> C[Total]",
+      "after": "flowchart LR\n  A[Items] --> B[Sum price x qty] --> D{Over 100?}\n  D -- yes --> E[x 0.9] --> C[Total]\n  D -- no --> C" }
+  ],
+  "mismatches": [
+    { "claim": "The discount uses the shared constants.", "observed": "cart.ts hard-codes 100 and 0.9; DISCOUNT and THRESHOLD are unused.", "evidence": [{ "kind": "code", "file": "src/cart.ts", "line": 14 }, { "kind": "code", "file": "src/new.ts", "line": 1, "endLine": 2 }] }
+  ],
+  "risks": [
+    { "id": "r-drift", "title": "Constants drift from the code", "scenario": "Someone changes DISCOUNT to 0.85; carts still take 10% off.", "severity": "medium", "evidence": [{ "kind": "code", "file": "src/new.ts", "line": 1 }] },
+    { "id": "r-boundary", "title": "Exactly $100 gets no discount", "scenario": "A $100.00 cart pays full price because the check is > not >=.", "severity": "low", "evidence": [{ "kind": "code", "file": "src/cart.ts", "line": 14 }] }
+  ],
+  "options": [
+    { "id": "o-import", "change": "Import DISCOUNT and THRESHOLD in cart.ts", "tradeoff": "One more import.", "relatesTo": ["r-drift"] },
+    { "id": "o-gte", "change": "Use >= 100", "tradeoff": "Changes who gets the discount; check with the business rule.", "relatesTo": ["r-boundary"] }
+  ]
+}
