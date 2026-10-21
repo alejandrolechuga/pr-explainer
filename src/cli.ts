@@ -8,6 +8,7 @@ import { briefJsonSchema } from "./brief.js";
 import type { PrContext } from "./context.js";
 import { annotateDiff, parseDiff } from "./diff.js";
 import { findCommit, readCommitDiffs, writeCommitDiffs } from "./commits.js";
+import { runChecks, writeChecks } from "./checks.js";
 import { fillCommand, loadConfig, configPath } from "./config.js";
 import { gatherLocal, gatherPr } from "./gather.js";
 import { formIdFor, renderPage } from "./render.js";
@@ -34,6 +35,10 @@ const USAGE = `pr-explainer <command>
                                                build <workdir>/page/index.html (refuses a brief that fails validate)
   serve <workdir> [--port 7700] [--no-open]    show the page on this computer; Send saves to <workdir>/answers.jsonl
   answers <workdir|form-id>                    print feedback sent from the page (needs "answersFile" in settings)
+  test-steps <workdir> --cmd "<test command>" [--setup "<install command>"] [--dir <repo>] [--timeout <seconds>]
+                                               run the tests at every commit (in a throwaway worktree) and save
+                                               <workdir>/checks.json; the page shows pass/fail per step.
+                                               It runs the PR's code on this computer: only for PRs you trust.
   validate <workdir>                           check <workdir>/brief.json against the diff and context
   schema                                       print the brief's JSON schema
   template                                     print the intent record template for PR bodies
@@ -47,7 +52,7 @@ function main(argv: string[]): number {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { commit: { type: "string" }, repo: { type: "string" }, base: { type: "string" }, json: { type: "boolean" }, dir: { type: "string" }, submit: { type: "string" }, "form-id": { type: "string" }, publish: { type: "boolean" }, open: { type: "boolean" }, port: { type: "string" }, "no-open": { type: "boolean" } },
+    options: { cmd: { type: "string" }, setup: { type: "string" }, timeout: { type: "string" }, commit: { type: "string" }, repo: { type: "string" }, base: { type: "string" }, json: { type: "boolean" }, dir: { type: "string" }, submit: { type: "string" }, "form-id": { type: "string" }, publish: { type: "boolean" }, open: { type: "boolean" }, port: { type: "string" }, "no-open": { type: "boolean" } },
   });
 
   switch (cmd) {
@@ -87,6 +92,22 @@ function main(argv: string[]): number {
         return 0;
       }
       console.log(annotateDiff(readFileSync(join(dir, "diff.patch"), "utf8"), positionals[1]));
+      return 0;
+    }
+    case "test-steps": {
+      const dir = positionals[0];
+      if (!dir || !values.cmd) { console.error(USAGE); return 2; }
+      const ctx = JSON.parse(readFileSync(join(dir, "context.json"), "utf8")) as PrContext;
+      const checks = runChecks(ctx, {
+        repoDir: resolve(values.dir ?? process.cwd()),
+        cmd: values.cmd,
+        ...(values.setup ? { setup: values.setup } : {}),
+        ...(values.timeout ? { timeoutSeconds: Number(values.timeout) } : {}),
+        log: (l) => console.log(l),
+      });
+      writeChecks(dir, checks);
+      const failed = checks.results.filter((r) => !r.ok).length;
+      console.log(`${checks.results.length - failed} of ${checks.results.length} commits pass; saved ${join(dir, "checks.json")}`);
       return 0;
     }
     case "validate": {
