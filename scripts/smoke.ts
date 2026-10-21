@@ -5,7 +5,7 @@
 // Needs Google Chrome installed (or CHROME_PATH). Screenshots go to qa-output/.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -98,7 +98,9 @@ try {
   assert.ok(await page.locator("#step-st-discount").isVisible(), "the page reopens on the step you were reading");
   await page.click('#step-st-discount .fb button[data-v="change"]');
   await page.fill("#step-st-discount .fb textarea", "Use the constants");
-  ok("steps: one at a time, Looks good moves on, strip and Prev/Next jump, code from the step's own commit, place kept on reload");
+  assert.ok(await page.locator('.strip button[data-go="st-discount"].test-fail').count(), "the strip marks the step whose tests fail");
+  assert.match((await page.locator("#step-st-discount .test-out pre").textContent()) ?? "", /expected 90 to be 100/);
+  ok("steps: one at a time, Looks good moves on, strip and Prev/Next jump, code from the step's own commit, test results per step, place kept on reload");
 
   await page.click("#summary > summary");
   const first = page.locator("#summary .snip").first();
@@ -150,6 +152,37 @@ try {
   assert.equal(clip, sent.comment);
   ok("Copy as text gives the same text");
   await phone.close();
+
+  // ---- since you last looked: a second version of the page, step 3's commit changed
+  {
+    const ctxL = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const p1 = await ctxL.newPage();
+    cli("render", work, "--submit", `json:${base}/feedback`, "--form-id", "since-v1");
+    await p1.goto(`${base}/page`);
+    await p1.click('.strip button[data-go="st-qty"]');
+    await p1.click('#step-st-qty .fb button[data-v="ok"]');
+    await p1.click('.strip button[data-go="st-cleanup"]');
+    await p1.click('#step-st-cleanup .fb button[data-v="ok"]');
+    const patch = join(work, "commits", "ccc3333cccc.patch");
+    const original = readFileSync(patch, "utf8");
+    writeFileSync(patch, original.replace("-gone", "-gone for good"));
+    cli("render", work, "--submit", `json:${base}/feedback`, "--form-id", "since-v2");
+    await p1.goto(`${base}/page`);
+    assert.match((await p1.textContent("#since")) ?? "", /^Since you last looked: steps 1 and 2 did not change; your marks there are kept\. Step 3 changed\.$/);
+    assert.equal(await p1.getAttribute('#step-st-qty .fb button[data-v="ok"]', "aria-pressed"), "true", "an unchanged step keeps its mark");
+    assert.equal(await p1.getAttribute('#step-st-cleanup .fb button[data-v="ok"]', "aria-pressed"), "false", "a changed step asks again");
+    assert.ok(await p1.locator("#step-st-cleanup").isVisible(), "the page opens on the changed step");
+    assert.match((await p1.textContent("#step-st-cleanup .step-meta")) ?? "", /changed since you looked/);
+    await p1.screenshot({ path: join(OUT, "phone-since.png") });
+    await p1.reload();
+    assert.match((await p1.textContent("#since")) ?? "", /Step 3 changed/, "the comparison survives a reload");
+    cli("render", work, "--submit", `json:${base}/feedback`, "--form-id", "since-v1");
+    await p1.goto(`${base}/page`);
+    assert.ok(await p1.locator("#since").isHidden(), "an older version does not compare itself with a newer one");
+    writeFileSync(patch, original);
+    await ctxL.close();
+    ok("since you last looked: unchanged steps keep their marks, a changed step is tagged and opens first, kept on reload, older pages untouched");
+  }
 
   // ---- form mode (an inbox that takes a plain form post)
   cli("render", work, "--submit", `form:${base}/answer`, "--form-id", "review-shop-7");

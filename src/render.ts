@@ -2,6 +2,7 @@
 // one step at a time, then deeper layers behind questions, and a way to send the review back.
 import { createHash } from "node:crypto";
 import type { Brief, CitationT } from "./brief.js";
+import type { CheckResult, Checks } from "./checks.js";
 import { commitForCitation, readingMinutes, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
 import { diffRows, excerpt, type DiffFile, type Row } from "./diff.js";
@@ -18,6 +19,8 @@ export interface RenderOptions {
   diffText?: string;
   /** each commit's own diff, so a step shows the code as that commit changed it */
   commitDiffs?: CommitDiff[];
+  /** test results per commit, from `test-steps` */
+  checks?: Checks | null;
   /** validator warnings, shown in the footer */
   warnings?: string[];
 }
@@ -76,7 +79,22 @@ interface ViewStep {
   minutes: number;
   uses: string[];
   meta: string;
+  /** what the step changed, ignoring line numbers: equal when a later version of the PR left it alone */
+  fp: string;
+  /** the tests at the step's last commit, when they were run */
+  check?: CheckResult;
   body: string;
+}
+
+/** a short hash of the lines a step adds and removes, per file, so moved line numbers do not count as a change */
+export function fingerprint(parts: [string, Row[]][]): string {
+  if (!parts.length) return ""; // nothing known about the step: it never counts as unchanged
+  const h = createHash("sha256");
+  for (const [path, rows] of [...parts].sort(([a], [b]) => a.localeCompare(b))) {
+    h.update(`${path}\n`);
+    for (const r of rows) if (r.kind !== " ") h.update(`${r.kind}${r.text}\n`);
+  }
+  return h.digest("hex").slice(0, 16);
 }
 
 export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: RenderOptions): string {
@@ -187,8 +205,13 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     sources.set(sha, src);
     return src;
   };
+  /** the result at the step's last commit that was tested */
+  const commitOrder = new Map(ctx.commits.map((c, i) => [c.sha, i] as const));
+  const checkOf = (shas: string[]): CheckResult | undefined =>
+    [...shas].sort((a, b) => (commitOrder.get(b) ?? 0) - (commitOrder.get(a) ?? 0)).map((sha) => o.checks?.results.find((r) => r.sha === sha)).find(Boolean);
   const stepsFromCommits = (): ViewStep[] => brief.steps.map((s) => {
     const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha ?? p);
+    const check = checkOf(shas);
     const mine = commitDiffs.filter((d) => shas.includes(d.sha));
     const changed = mine.reduce((n, d) => n + d.files.reduce((m, f) => m + f.added + f.removed, 0), 0);
     const srcFor = (c: CodeCite): CodeSource => commitSource(commitForCitation(mine, c)?.sha ?? shas[0]!);
@@ -199,7 +222,9 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return {
       id: s.id, title: s.title, summary: s.summary, ...(s.why ? { why: s.why } : {}), basis: s.basis,
       minutes: readingMinutes(changed), uses: s.uses,
+      ...(check ? { check } : {}),
       meta: `${shas.length === 1 ? "commit" : "commits"} ${commitLinks}`,
+      fp: fingerprint(shas.flatMap((sha) => [...commitSource(sha).rows])),
       body: cites(s.evidence, srcFor),
     };
   });
@@ -207,6 +232,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     id: s.id, title: s.title, summary: s.summary, uses: [],
     minutes: readingMinutes(s.files.reduce((n, p) => n + (byPath.get(p)?.added ?? 0) + (byPath.get(p)?.removed ?? 0), 0)),
     meta: riskPill(s.risk),
+    fp: fingerprint(s.files.map((p) => [p, prSource.rows.get(p) ?? []])),
     body: `<details class="files"><summary>${s.files.length} file${s.files.length === 1 ? "" : "s"}</summary>${fileList(s.files)}</details>`,
   }));
   const fromCommits = brief.steps.length > 0;
@@ -214,6 +240,9 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   const stepNo = new Map(steps.map((s, i) => [s.id, i + 1] as const));
   const totalMinutes = steps.reduce((n, s) => n + s.minutes, 0);
 
+  const tested = steps.filter((s) => s.check);
+  const failing = steps.map((s, i) => [s, i + 1] as const).filter(([s]) => s.check && !s.check.ok);
+  const testSummary = !tested.length ? "" : failing.length ? ` · tests fail at step ${failing.map(([, n]) => n).join(", ")}` : tested.length === steps.length ? " · tests pass at every step" : ` · tests pass at the ${tested.length} steps tested`;
   const stepLink = (id: string) => `<a href="#step-${esc(id)}" data-go="${esc(id)}">step ${stepNo.get(id)}</a>`;
   const stepCard = (s: ViewStep, i: number): string => {
     const usedBy = steps.filter((x) => x.uses.includes(s.id)).map((x) => x.id);
@@ -222,12 +251,13 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
       usedBy.length ? `Later, ${usedBy.map(stepLink).join(", ")} ${usedBy.length === 1 ? "relies" : "rely"} on this.` : "",
     ].filter(Boolean).join(" ");
     const prev = steps[i - 1], next = steps[i + 1];
-    return `<article class="step" id="step-${esc(s.id)}" data-step="${esc(s.id)}"${i ? " hidden" : ""}>
-      <p class="step-meta"><b>Step ${i + 1} of ${steps.length}</b> · about ${s.minutes} min · ${s.meta}</p>
+    return `<article class="step" id="step-${esc(s.id)}" data-step="${esc(s.id)}" data-fp="${s.fp}"${i ? " hidden" : ""}>
+      <p class="step-meta"><b>Step ${i + 1} of ${steps.length}</b> · about ${s.minutes} min · ${s.meta}${s.check ? ` ${s.check.ok ? `<span class="pill low">tests pass</span>` : `<span class="pill high">tests fail</span>`}` : ""}</p>
       <h3 class="step-title">${esc(s.title)}</h3>
       <p class="step-summary">${esc(s.summary)}</p>
       ${s.why ? `<p class="step-why"><b>Why:</b> ${esc(s.why)} ${s.basis ? basis(s.basis) : ""}</p>` : ""}
       ${links ? `<p class="step-links">${links}</p>` : ""}
+      ${s.check && !s.check.ok ? `<details class="test-out"><summary>Why the tests fail here (last lines of the output)</summary><pre>${esc(s.check.tail)}</pre></details>` : ""}
       ${s.body}
       ${fb("step", s.id, `Step ${i + 1}: ${s.title}`, "Looks good")}
       <div class="pager">
@@ -237,10 +267,11 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     </article>`;
   };
   const strip = `<ol class="strip" aria-label="Steps in order">${steps.map((s, i) =>
-    `<li><button type="button" data-go="${esc(s.id)}" aria-current="${i ? "false" : "step"}" title="${esc(s.title)}"><span class="dot">${i + 1}</span><span class="st">${esc(s.title)}</span></button></li>`).join("")}</ol>`;
+    `<li><button type="button" data-go="${esc(s.id)}" aria-current="${i ? "false" : "step"}" title="${esc(s.title)}"${s.check ? ` class="${s.check.ok ? "test-pass" : "test-fail"}"` : ""}><span class="dot">${i + 1}</span><span class="st">${esc(s.title)}</span></button></li>`).join("")}</ol>`;
   const stepsSection = `<section class="steps" id="steps">
-    <h2>${fromCommits ? "Step by step" : "Part by part"} <span class="meta">${steps.length} ${fromCommits ? "steps" : "parts"} · about ${totalMinutes} min</span></h2>
+    <h2>${fromCommits ? "Step by step" : "Part by part"} <span class="meta">${steps.length} ${fromCommits ? "steps" : "parts"} · about ${totalMinutes} min${testSummary}</span></h2>
     ${fromCommits ? "" : `<p class="muted">This PR's commits do not read as steps, so it is cut into parts instead.</p>`}
+    <p class="since" id="since" hidden></p>
     ${strip}
     ${steps.map(stepCard).join("")}
   </section>`;
@@ -248,6 +279,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   // ---- the first screen: three sentences and where to look
   const g = brief.glance;
   const lookHere = [
+    ...(failing.length ? [`<li><span class="pill high">tests fail</span> <a href="#step-${esc(failing[0]![0].id)}" data-go="${esc(failing[0]![0].id)}">first at step ${failing[0]![1]}: ${esc(failing[0]![0].title)}</a></li>`] : []),
     ...risks.filter((r) => r.severity !== "low").slice(0, 3).map((r) => `<li>${riskPill(r.severity)} <a href="#risk-${esc(r.id)}">${esc(r.title)}</a></li>`),
     ...(brief.mismatches.length ? [`<li><span class="pill medium">mismatch</span> <a href="#plan">${brief.mismatches.length} place${brief.mismatches.length === 1 ? "" : "s"} where the code differs from what was said</a></li>`] : []),
   ];
@@ -438,17 +470,27 @@ main{max-width:780px;margin:0 auto;padding:16px}
 .lookhere{list-style:none;padding:0;margin:10px 0 0;display:grid;gap:6px;font-size:15px}
 .steps h2,.more h2,.review h2{font-size:17px;margin:0 0 10px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
 h2 .meta{color:var(--muted);font-size:13px;font-weight:400}
-.strip{list-style:none;padding:0 0 4px;margin:0 0 12px;display:flex;overflow-x:auto;scrollbar-width:thin}
+.strip{list-style:none;padding:8px 0 6px;margin:0 0 12px;display:flex;overflow-x:auto;scrollbar-width:thin}
 .strip li{flex:1 0 64px;max-width:140px;position:relative}
-.strip li+li::before{content:"";position:absolute;top:15px;right:50%;width:100%;height:2px;background:var(--line);z-index:0}
+.strip li+li::before{content:"";position:absolute;top:23px;right:50%;width:100%;height:2px;background:var(--line);z-index:0}
 .strip button{position:relative;z-index:1;width:100%;border:0;background:none;color:var(--muted);padding:0 2px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;line-height:1.25}
 .strip .dot{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--surface);border:2px solid var(--line);color:var(--ink);font-weight:650;font-size:13px}
-.strip .st{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:center}
+.strip .st{overflow-wrap:normal;word-break:normal;hyphens:auto;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:center}
 .strip button[aria-current="step"]{color:var(--ink)}
 .strip button[aria-current="step"] .dot{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
 .strip button.ok .dot{background:var(--stated-bg);border-color:var(--stated);color:var(--stated)}
 .strip button.question .dot{background:var(--guess-bg);border-color:var(--guess);color:var(--guess)}
 .strip button.change .dot{background:var(--high-bg);border-color:var(--high);color:var(--high)}
+.strip button.test-pass .dot::before,.strip button.test-fail .dot::before{position:absolute;bottom:-6px;right:-7px;width:15px;height:15px;border-radius:50%;font-size:10px;line-height:15px;text-align:center;border:2px solid var(--surface);font-weight:700}
+.strip button.test-pass .dot::before{content:"✓";background:var(--stated);color:var(--surface)}
+.strip button.test-fail .dot::before{content:"✕";background:var(--high);color:var(--surface)}
+.strip .dot{position:relative}
+.test-out{margin:8px 0;border:1px solid var(--high);border-radius:8px;background:var(--high-bg)}
+.test-out summary{cursor:pointer;padding:6px 10px;font-size:14px;color:var(--high);font-weight:600}
+.test-out pre{margin:0;padding:8px 10px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:var(--code-bg);color:var(--ink);border-radius:0 0 8px 8px}
+.since{background:var(--stated-bg);border-left:3px solid var(--stated);padding:8px 12px;border-radius:6px;font-size:14px;margin:0 0 12px}
+.strip button.since-changed .dot::after,.strip button.since-new .dot::after{content:"";position:absolute;top:-7px;right:-9px;width:11px;height:11px;border-radius:50%;background:var(--medium);border:2px solid var(--surface)}
+.tag{display:inline-block;font-size:12px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--medium-bg);color:var(--medium)}
 .step{border-top:1px solid var(--line);padding-top:12px;scroll-margin-top:12px}
 .step-meta{font-size:13px;color:var(--muted);margin:0}
 .step-title{font-size:18px;margin:4px 0 2px;text-transform:none;letter-spacing:0;color:var(--ink)}
@@ -571,7 +613,7 @@ const JS = `
   const store = { get() { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch { return {}; } },
     set(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch {} } };
   const state = Object.assign({ items: {}, verdict: '', general: '', at: '' }, store.get());
-  const save = () => { store.set(state); tally(); };
+  function save() { store.set(state); tally(); remember(); }
 
   // one step at a time
   const steps = [...document.querySelectorAll('.step')];
@@ -594,7 +636,58 @@ const JS = `
   });
   let fromHash = '';
   try { fromHash = location.hash.startsWith('#step-') ? decodeURIComponent(location.hash.slice(6)) : ''; } catch {}
-  if (steps.length) showStep(fromHash || state.at || steps[0].dataset.step, !!fromHash);
+
+  // since you last looked: each version of a PR's page is remembered (per browser) in the order it
+  // was first opened. A page compares itself with the version opened just before it: a step whose
+  // code is unchanged keeps the mark it had there; changed and new steps are tagged and ask again.
+  const PKEY = 'pr-explainer:pr:' + cfg.pr;
+  let hist = { order: [], pages: {} };
+  try { hist = Object.assign(hist, JSON.parse(localStorage.getItem(PKEY) || '{}')); } catch {}
+  if (!hist.order.includes(cfg.formId)) hist.order = [...hist.order, cfg.formId].slice(-10);
+  const before = hist.pages[hist.order[hist.order.indexOf(cfg.formId) - 1]] || null;
+  function remember() {
+    const byFp = {}, byId = {};
+    for (const s of steps) {
+      byId[s.dataset.step] = s.dataset.fp;
+      const it = state.items['step:' + s.dataset.step];
+      if (it && s.dataset.fp) byFp[s.dataset.fp] = { v: it.v, note: it.note };
+    }
+    hist.pages[cfg.formId] = { byFp, byId };
+    for (const k of Object.keys(hist.pages)) if (!hist.order.includes(k)) delete hist.pages[k];
+    try { localStorage.setItem(PKEY, JSON.stringify(hist)); } catch {}
+  }
+  const since = {};
+  if (before && steps.length) {
+    const oldFps = new Set(Object.values(before.byId || {}).filter(Boolean));
+    for (const s of steps) {
+      const id = s.dataset.step, fp = s.dataset.fp, mark = fp && (before.byFp || {})[fp];
+      if (fp && oldFps.has(fp)) {
+        since[id] = 'same';
+        if (mark && !state.imported && !state.items['step:' + id]) state.items['step:' + id] = { v: mark.v, note: mark.note || '', kind: 'step', title: s.querySelector('.fb').dataset.title };
+      } else since[id] = id in (before.byId || {}) ? 'changed' : 'new';
+      if (since[id] !== 'same') {
+        const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = since[id] === 'new' ? 'new since you looked' : 'changed since you looked';
+        s.querySelector('.step-meta').append(' ', tag);
+        const b = document.querySelector('.strip button[data-go="' + CSS.escape(id) + '"]'); if (b) b.classList.add('since-' + since[id]);
+      }
+    }
+    state.imported = true;
+    const nums = (k) => steps.map((s, i) => since[s.dataset.step] === k ? i + 1 : 0).filter(Boolean);
+    const list = (ns) => ns.length === 1 ? cfg.stepWord + ' ' + ns[0] : cfg.stepWord + 's ' + ns.slice(0, -1).join(', ') + ' and ' + ns.at(-1);
+    const cap = (t) => t.replace(/^./, (c) => c.toUpperCase());
+    const same = nums('same'), changed = nums('changed'), fresh = nums('new');
+    const parts = [];
+    if (same.length) parts.push((same.length === steps.length ? 'Nothing changed' : list(same) + ' did not change') + '; your marks there are kept.');
+    if (changed.length) parts.push(cap(list(changed)) + ' changed.');
+    if (fresh.length) parts.push(cap(list(fresh)) + (fresh.length === 1 ? ' is new.' : ' are new.'));
+    const box = document.getElementById('since');
+    box.textContent = 'Since you last looked: ' + parts.join(' ');
+    box.hidden = false;
+    store.set(state);
+  }
+  remember();
+  const firstOpen = steps.find((s) => since[s.dataset.step] && since[s.dataset.step] !== 'same') || steps.find((s) => !state.items['step:' + s.dataset.step]);
+  if (steps.length) showStep(fromHash || state.at || (Object.keys(since).length && firstOpen ? firstOpen.dataset.step : '') || steps[0].dataset.step, !!fromHash);
 
   // feedback on each item
   for (const box of document.querySelectorAll('.fb')) {

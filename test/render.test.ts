@@ -5,7 +5,7 @@ import { BriefSchema } from "../src/brief.js";
 import { readCommitDiffs } from "../src/commits.js";
 import type { PrContext } from "../src/context.js";
 import { parseDiff } from "../src/diff.js";
-import { esc, fileAnchor, formIdFor, renderPage } from "../src/render.js";
+import { esc, fileAnchor, fingerprint, formIdFor, renderPage } from "../src/render.js";
 
 const dir = new URL("./fixtures/workdir/", import.meta.url);
 const ctx = JSON.parse(readFileSync(new URL("context.json", dir), "utf8")) as PrContext;
@@ -110,7 +110,7 @@ describe("the first screen and the steps", () => {
 
   it("shows the commits as steps, in order, the first one visible", () => {
     const html = page();
-    const ids = [...html.matchAll(/<article class="step" id="step-([^"]+)" data-step="[^"]+"( hidden)?/g)].map((m) => [m[1], !!m[2]]);
+    const ids = [...html.matchAll(/<article class="step" id="step-([^"]+)" data-step="[^"]+" data-fp="[0-9a-f]{16}"( hidden)?/g)].map((m) => [m[1], !!m[2]]);
     expect(ids).toEqual([["st-qty", false], ["st-discount", true], ["st-cleanup", true]]);
     expect(html).toContain("<b>Step 2 of 3</b>");
     expect(html).toContain('Builds on <a href="#step-st-qty" data-go="st-qty">step 1</a>.');
@@ -128,11 +128,36 @@ describe("the first screen and the steps", () => {
     expect(html).toMatch(/commits\/bbb2222bbbb#diff-[0-9a-f]{64}R14-R16/);
   });
 
+  it("marks each step with its tests, and shows why a failing step fails", () => {
+    const checks = JSON.parse(readFileSync(new URL("checks.json", dir), "utf8"));
+    const html = renderPage(brief, ctx, files, { formId: "x", diffText, commitDiffs, checks });
+    expect(html).toContain("tests fail at step 2");
+    expect(html).toContain('data-go="st-qty" aria-current="step" title="Count quantity" class="test-pass"');
+    expect(html).toContain('class="test-fail"');
+    expect(html).toContain("expected 90 to be 100 &lt;b&gt;");
+    expect(html).toContain('<span class="pill high">tests fail</span> <a href="#step-st-discount" data-go="st-discount">first at step 2: Discount big orders</a>');
+    expect(page()).not.toContain("tests fail");
+  });
+
   it("uses the slices as parts when there are no steps", () => {
     const html = page({ steps: [] });
     expect(html).toContain("Part by part");
     expect(html).toContain('id="step-s-total"');
     expect(html).toContain("do not read as steps");
+  });
+});
+
+describe("fingerprint", () => {
+  const rows = (start: number, text: string) => [{ kind: " " as const, old: start, new: start, text: "ctx", hunk: 0 }, { kind: "+" as const, new: start + 1, text, hunk: 0 }];
+  it("stays the same when only line numbers or context move", () => {
+    expect(fingerprint([["a.ts", rows(10, "x = 1")]])).toBe(fingerprint([["a.ts", rows(40, "x = 1")]]));
+  });
+  it("is empty when nothing is known about the step", () => {
+    expect(fingerprint([])).toBe("");
+  });
+  it("changes when what the step adds or removes changes", () => {
+    expect(fingerprint([["a.ts", rows(10, "x = 1")]])).not.toBe(fingerprint([["a.ts", rows(10, "x = 2")]]));
+    expect(fingerprint([["a.ts", rows(10, "x = 1")]])).not.toBe(fingerprint([["b.ts", rows(10, "x = 1")]]));
   });
 });
 
