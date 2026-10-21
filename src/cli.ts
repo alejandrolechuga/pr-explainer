@@ -211,6 +211,7 @@ function renderTo(dir: string, submit: string | undefined, formIdArg: string | u
     ...(cfg.noteLimit ? { noteLimit: cfg.noteLimit } : {}),
     warnings: report.findings.map((f) => f.message),
     diffText,
+    commitDiffs,
   });
   const out = join(dir, "page");
   mkdirSync(out, { recursive: true });

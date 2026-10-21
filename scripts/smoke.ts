@@ -76,12 +76,31 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(`${base}/page`);
   assert.equal(await page.locator("h1").textContent(), "Bulk discount <b>& friends</b>", "text from the brief is shown as text, never as HTML");
-  assert.ok(await page.locator("#summary[open]").count(), "the summary is open");
-  assert.ok(await page.locator("#why:not([open])").count(), "deeper layers start closed");
+  assert.ok(await page.locator(".glance .g-does").isVisible(), "three sentences first");
+  assert.equal(await page.locator("details.layer[open]").count(), 0, "deeper layers start closed");
+  assert.equal(await page.locator("article.step:visible").count(), 1, "one step at a time");
+  assert.ok(await page.locator("#step-st-qty").isVisible());
   await noSideScroll(page, "phone");
   await page.screenshot({ path: join(OUT, "phone-top.png") });
-  ok("phone: summary and reading map open, deeper layers closed, no sideways scroll, brief text escaped");
+  ok("phone: three sentences, then step 1 of 3, deeper layers closed, no sideways scroll, brief text escaped");
 
+  // steps: Looks good moves on; the strip and Prev move around; the place is kept
+  await page.click('#step-st-qty .fb button[data-v="ok"]');
+  await page.waitForSelector("#step-st-discount:visible");
+  assert.match((await page.locator('#step-st-discount .snip summary a').first().getAttribute("href")) ?? "", /\/pull\/7\/commits\/bbb2222bbbb#diff-[0-9a-f]{64}R14-R16$/);
+  assert.ok(await page.locator('.strip button[data-go="st-qty"].ok').count(), "the strip shows step 1 as good");
+  await page.click('.strip button[data-go="st-cleanup"]');
+  assert.ok(await page.locator("#step-st-cleanup").isVisible());
+  await page.click('#step-st-cleanup .pager button[data-go="st-discount"]');
+  assert.ok(await page.locator("#step-st-discount").isVisible());
+  await page.screenshot({ path: join(OUT, "phone-step.png") });
+  await page.reload();
+  assert.ok(await page.locator("#step-st-discount").isVisible(), "the page reopens on the step you were reading");
+  await page.click('#step-st-discount .fb button[data-v="change"]');
+  await page.fill("#step-st-discount .fb textarea", "Use the constants");
+  ok("steps: one at a time, Looks good moves on, strip and Prev/Next jump, code from the step's own commit, place kept on reload");
+
+  await page.click("#summary > summary");
   const first = page.locator("#summary .snip").first();
   assert.match((await first.locator("summary a").getAttribute("href")) ?? "", /^https:\/\/github\.com\/example\/shop\/pull\/7\/files#diff-[0-9a-f]{64}R12$/);
   assert.match((await page.locator('.snip:has-text("(before)") summary a').getAttribute("href")) ?? "", /L12$/);
@@ -89,7 +108,7 @@ try {
   assert.ok(await page.evaluate(() => [...document.querySelectorAll(".code")].every((c) => c.getBoundingClientRect().right <= innerWidth)), "code blocks stay inside the screen");
   ok("code under each item: cited lines marked, links to the PR's changed-files view (R new, L old), long lines scroll inside the block");
 
-  await page.click('nav a[href="#pictures"]');
+  await page.click("#pictures > summary");
   await page.waitForSelector("#viz-v-total .panel[data-panel=after] svg", { timeout: 15000 });
   await page.click('#viz-v-total [data-tab="before"]');
   await page.waitForSelector("#viz-v-total .panel[data-panel=before] svg", { timeout: 15000 });
@@ -103,13 +122,12 @@ try {
   await openAll(page);
   await page.click('#risk-r-drift .fb button[data-v="change"]');
   await page.fill("#risk-r-drift .fb textarea", "Import the constants please");
-  await page.click('#slice-s-total .fb button[data-v="ok"]');
   await page.click('#why-d-constants .fb button[data-v="question"]');
   await page.fill("#why-d-constants .fb textarea", "Who else uses them?");
   await page.reload();
   await openAll(page);
   assert.equal(await page.inputValue("#risk-r-drift .fb textarea"), "Import the constants please", "a draft survives a reload");
-  assert.equal(await page.getAttribute('#slice-s-total .fb button[data-v="ok"]', "aria-pressed"), "true");
+  assert.equal(await page.getAttribute('#step-st-qty .fb button[data-v="ok"]', "aria-pressed"), "true");
   await noSideScroll(page, "phone, all layers open");
   await page.screenshot({ path: join(OUT, "phone-full.png"), fullPage: true });
   ok("OK / Question / Change it on items, notes, and the draft kept across a reload");
@@ -124,7 +142,7 @@ try {
   assert.equal(sent.page, "pr-shop-7");
   assert.equal(sent.answers.verdict, "request-changes");
   assert.equal(sent.answers["risk:r-drift"], "change");
-  assert.match(sent.comment, /Verdict: Request changes[\s\S]*Close, two fixes\.[\s\S]*Why:\n- \[Question\] Constants in their own file \(d-constants\): Who else uses them\?[\s\S]*Risks:\n- \[Change it\] Constants drift from the code \(r-drift\): Import the constants please/);
+  assert.match(sent.comment, /Verdict: Request changes\nFix from step 2 on; steps before it stand\.[\s\S]*Close, two fixes\.[\s\S]*Steps:\n- \[OK\] Step 1: Count quantity \(st-qty\)\n- \[Change it\] Step 2: Discount big orders \(st-discount\): Use the constants[\s\S]*Why:\n- \[Question\] Constants in their own file \(d-constants\): Who else uses them\?[\s\S]*Risks:\n- \[Change it\] Constants drift from the code \(r-drift\): Import the constants please/);
   ok("Send (JSON): a verdict is required, and the receiver gets the verdict, each mark and the text");
 
   await page.click("#copy");
