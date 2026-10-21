@@ -128,6 +128,17 @@ describe("the first screen and the steps", () => {
     expect(html).toMatch(/commits\/bbb2222bbbb#diff-[0-9a-f]{64}R14-R16/);
   });
 
+  it("marks each step with its tests, and shows why a failing step fails", () => {
+    const checks = JSON.parse(readFileSync(new URL("checks.json", dir), "utf8"));
+    const html = renderPage(brief, ctx, files, { formId: "x", diffText, commitDiffs, checks });
+    expect(html).toContain("tests fail at step 2");
+    expect(html).toContain('data-go="st-qty" aria-current="step" title="Count quantity" class="test-pass"');
+    expect(html).toContain('class="test-fail"');
+    expect(html).toContain("expected 90 to be 100 &lt;b&gt;");
+    expect(html).toContain('<span class="pill high">tests fail</span> <a href="#step-st-discount" data-go="st-discount">first at step 2: Discount big orders</a>');
+    expect(page()).not.toContain("tests fail");
+  });
+
   it("uses the slices as parts when there are no steps", () => {
     const html = page({ steps: [] });
     expect(html).toContain("Part by part");

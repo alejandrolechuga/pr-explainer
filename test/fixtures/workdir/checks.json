@@ -1,0 +1,9 @@
+{
+  "cmd": "npm test",
+  "at": "2026-10-21T10:00:00.000Z",
+  "results": [
+    { "sha": "aaa1111aaaa", "ok": true, "seconds": 4, "tail": "" },
+    { "sha": "bbb2222bbbb", "ok": false, "seconds": 5, "tail": "FAIL cart.test.ts\n  expected 90 to be 100 <b>" },
+    { "sha": "ccc3333cccc", "ok": true, "seconds": 4, "tail": "" }
+  ]
+}

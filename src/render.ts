@@ -2,6 +2,7 @@
 // one step at a time, then deeper layers behind questions, and a way to send the review back.
 import { createHash } from "node:crypto";
 import type { Brief, CitationT } from "./brief.js";
+import type { CheckResult, Checks } from "./checks.js";
 import { commitForCitation, readingMinutes, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
 import { diffRows, excerpt, type DiffFile, type Row } from "./diff.js";
@@ -18,6 +19,8 @@ export interface RenderOptions {
   diffText?: string;
   /** each commit's own diff, so a step shows the code as that commit changed it */
   commitDiffs?: CommitDiff[];
+  /** test results per commit, from `test-steps` */
+  checks?: Checks | null;
   /** validator warnings, shown in the footer */
   warnings?: string[];
 }
@@ -78,6 +81,8 @@ interface ViewStep {
   meta: string;
   /** what the step changed, ignoring line numbers: equal when a later version of the PR left it alone */
   fp: string;
+  /** the tests at the step's last commit, when they were run */
+  check?: CheckResult;
   body: string;
 }
 
@@ -199,6 +204,9 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     sources.set(sha, src);
     return src;
   };
+  /** the result at the step's last commit that was tested */
+  const checkOf = (shas: string[]): CheckResult | undefined =>
+    [...shas].reverse().map((sha) => o.checks?.results.find((r) => r.sha === sha)).find(Boolean);
   const stepsFromCommits = (): ViewStep[] => brief.steps.map((s) => {
     const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha ?? p);
     const mine = commitDiffs.filter((d) => shas.includes(d.sha));
@@ -211,6 +219,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return {
       id: s.id, title: s.title, summary: s.summary, ...(s.why ? { why: s.why } : {}), basis: s.basis,
       minutes: readingMinutes(changed), uses: s.uses,
+      ...(checkOf(shas) ? { check: checkOf(shas)! } : {}),
       meta: `${shas.length === 1 ? "commit" : "commits"} ${commitLinks}`,
       fp: fingerprint(shas.flatMap((sha) => [...commitSource(sha).rows].map(([p, r]) => [p, r] as [string, Row[]]))),
       body: cites(s.evidence, srcFor),
@@ -228,6 +237,9 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   const stepNo = new Map(steps.map((s, i) => [s.id, i + 1] as const));
   const totalMinutes = steps.reduce((n, s) => n + s.minutes, 0);
 
+  const tested = steps.filter((s) => s.check);
+  const failing = steps.map((s, i) => [s, i + 1] as const).filter(([s]) => s.check && !s.check.ok);
+  const testSummary = !tested.length ? "" : failing.length ? ` · tests fail at step ${failing.map(([, n]) => n).join(", ")}` : tested.length === steps.length ? " · tests pass at every step" : ` · tests pass at the ${tested.length} steps tested`;
   const stepLink = (id: string) => `<a href="#step-${esc(id)}" data-go="${esc(id)}">step ${stepNo.get(id)}</a>`;
   const stepCard = (s: ViewStep, i: number): string => {
     const usedBy = steps.filter((x) => x.uses.includes(s.id)).map((x) => x.id);
@@ -237,11 +249,12 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     ].filter(Boolean).join(" ");
     const prev = steps[i - 1], next = steps[i + 1];
     return `<article class="step" id="step-${esc(s.id)}" data-step="${esc(s.id)}" data-fp="${s.fp}"${i ? " hidden" : ""}>
-      <p class="step-meta"><b>Step ${i + 1} of ${steps.length}</b> · about ${s.minutes} min · ${s.meta}</p>
+      <p class="step-meta"><b>Step ${i + 1} of ${steps.length}</b> · about ${s.minutes} min · ${s.meta}${s.check ? ` ${s.check.ok ? `<span class="pill low">tests pass</span>` : `<span class="pill high">tests fail</span>`}` : ""}</p>
       <h3 class="step-title">${esc(s.title)}</h3>
       <p class="step-summary">${esc(s.summary)}</p>
       ${s.why ? `<p class="step-why"><b>Why:</b> ${esc(s.why)} ${s.basis ? basis(s.basis) : ""}</p>` : ""}
       ${links ? `<p class="step-links">${links}</p>` : ""}
+      ${s.check && !s.check.ok ? `<details class="test-out"><summary>Why the tests fail here (last lines of the output)</summary><pre>${esc(s.check.tail)}</pre></details>` : ""}
       ${s.body}
       ${fb("step", s.id, `Step ${i + 1}: ${s.title}`, "Looks good")}
       <div class="pager">
@@ -251,9 +264,9 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     </article>`;
   };
   const strip = `<ol class="strip" aria-label="Steps in order">${steps.map((s, i) =>
-    `<li><button type="button" data-go="${esc(s.id)}" aria-current="${i ? "false" : "step"}" title="${esc(s.title)}"><span class="dot">${i + 1}</span><span class="st">${esc(s.title)}</span></button></li>`).join("")}</ol>`;
+    `<li><button type="button" data-go="${esc(s.id)}" aria-current="${i ? "false" : "step"}" title="${esc(s.title)}"${s.check ? ` class="${s.check.ok ? "test-pass" : "test-fail"}"` : ""}><span class="dot">${i + 1}</span><span class="st">${esc(s.title)}</span></button></li>`).join("")}</ol>`;
   const stepsSection = `<section class="steps" id="steps">
-    <h2>${fromCommits ? "Step by step" : "Part by part"} <span class="meta">${steps.length} ${fromCommits ? "steps" : "parts"} · about ${totalMinutes} min</span></h2>
+    <h2>${fromCommits ? "Step by step" : "Part by part"} <span class="meta">${steps.length} ${fromCommits ? "steps" : "parts"} · about ${totalMinutes} min${testSummary}</span></h2>
     ${fromCommits ? "" : `<p class="muted">This PR's commits do not read as steps, so it is cut into parts instead.</p>`}
     <p class="since" id="since" hidden></p>
     ${strip}
@@ -263,6 +276,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   // ---- the first screen: three sentences and where to look
   const g = brief.glance;
   const lookHere = [
+    ...(failing.length ? [`<li><span class="pill high">tests fail</span> <a href="#step-${esc(failing[0]![0].id)}" data-go="${esc(failing[0]![0].id)}">first at step ${failing[0]![1]}: ${esc(failing[0]![0].title)}</a></li>`] : []),
     ...risks.filter((r) => r.severity !== "low").slice(0, 3).map((r) => `<li>${riskPill(r.severity)} <a href="#risk-${esc(r.id)}">${esc(r.title)}</a></li>`),
     ...(brief.mismatches.length ? [`<li><span class="pill medium">mismatch</span> <a href="#plan">${brief.mismatches.length} place${brief.mismatches.length === 1 ? "" : "s"} where the code differs from what was said</a></li>`] : []),
   ];
@@ -453,9 +467,9 @@ main{max-width:780px;margin:0 auto;padding:16px}
 .lookhere{list-style:none;padding:0;margin:10px 0 0;display:grid;gap:6px;font-size:15px}
 .steps h2,.more h2,.review h2{font-size:17px;margin:0 0 10px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
 h2 .meta{color:var(--muted);font-size:13px;font-weight:400}
-.strip{list-style:none;padding:0 0 4px;margin:0 0 12px;display:flex;overflow-x:auto;scrollbar-width:thin}
+.strip{list-style:none;padding:8px 0 6px;margin:0 0 12px;display:flex;overflow-x:auto;scrollbar-width:thin}
 .strip li{flex:1 0 64px;max-width:140px;position:relative}
-.strip li+li::before{content:"";position:absolute;top:15px;right:50%;width:100%;height:2px;background:var(--line);z-index:0}
+.strip li+li::before{content:"";position:absolute;top:23px;right:50%;width:100%;height:2px;background:var(--line);z-index:0}
 .strip button{position:relative;z-index:1;width:100%;border:0;background:none;color:var(--muted);padding:0 2px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;line-height:1.25}
 .strip .dot{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--surface);border:2px solid var(--line);color:var(--ink);font-weight:650;font-size:13px}
 .strip .st{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:center}
@@ -464,8 +478,15 @@ h2 .meta{color:var(--muted);font-size:13px;font-weight:400}
 .strip button.ok .dot{background:var(--stated-bg);border-color:var(--stated);color:var(--stated)}
 .strip button.question .dot{background:var(--guess-bg);border-color:var(--guess);color:var(--guess)}
 .strip button.change .dot{background:var(--high-bg);border-color:var(--high);color:var(--high)}
+.strip button.test-pass .dot::before,.strip button.test-fail .dot::before{position:absolute;bottom:-6px;right:-7px;width:15px;height:15px;border-radius:50%;font-size:10px;line-height:15px;text-align:center;border:2px solid var(--surface);font-weight:700}
+.strip button.test-pass .dot::before{content:"✓";background:var(--stated);color:var(--surface)}
+.strip button.test-fail .dot::before{content:"✕";background:var(--high);color:var(--surface)}
+.strip .dot{position:relative}
+.test-out{margin:8px 0;border:1px solid var(--high);border-radius:8px;background:var(--high-bg)}
+.test-out summary{cursor:pointer;padding:6px 10px;font-size:14px;color:var(--high);font-weight:600}
+.test-out pre{margin:0;padding:8px 10px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:var(--code-bg);color:var(--ink);border-radius:0 0 8px 8px}
 .since{background:var(--stated-bg);border-left:3px solid var(--stated);padding:8px 12px;border-radius:6px;font-size:14px;margin:0 0 12px}
-.strip button.since-changed .dot::after,.strip button.since-new .dot::after{content:"";position:absolute;margin:-22px 0 0 22px;width:9px;height:9px;border-radius:50%;background:var(--medium);border:2px solid var(--surface)}
+.strip button.since-changed .dot::after,.strip button.since-new .dot::after{content:"";position:absolute;top:-7px;right:-9px;width:11px;height:11px;border-radius:50%;background:var(--medium);border:2px solid var(--surface)}
 .tag{display:inline-block;font-size:12px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--medium-bg);color:var(--medium)}
 .step{border-top:1px solid var(--line);padding-top:12px;scroll-margin-top:12px}
 .step-meta{font-size:13px;color:var(--muted);margin:0}

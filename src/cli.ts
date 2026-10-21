@@ -8,7 +8,7 @@ import { briefJsonSchema } from "./brief.js";
 import type { PrContext } from "./context.js";
 import { annotateDiff, parseDiff } from "./diff.js";
 import { findCommit, readCommitDiffs, writeCommitDiffs } from "./commits.js";
-import { runChecks, writeChecks } from "./checks.js";
+import { readChecks, runChecks, writeChecks } from "./checks.js";
 import { fillCommand, loadConfig, configPath } from "./config.js";
 import { gatherLocal, gatherPr } from "./gather.js";
 import { formIdFor, renderPage } from "./render.js";
@@ -233,6 +233,7 @@ function renderTo(dir: string, submit: string | undefined, formIdArg: string | u
     warnings: report.findings.map((f) => f.message),
     diffText,
     commitDiffs,
+    checks: readChecks(dir),
   });
   const out = join(dir, "page");
   mkdirSync(out, { recursive: true });
