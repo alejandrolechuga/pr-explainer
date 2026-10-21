@@ -123,6 +123,11 @@ describe("the first screen and the steps", () => {
     expect(html).toContain('<a href="https://github.com/example/shop/pull/7/commits/aaa1111aaaa"');
   });
 
+  it("shows a multi-commit step's code from the commit that changed it", () => {
+    const html = page({ steps: [{ ...brief.steps[0]!, commits: ["aaa1111", "bbb2222"], evidence: [{ kind: "code", file: "src/cart.ts", side: "new", line: 14, endLine: 16 }] }, brief.steps[2]!] });
+    expect(html).toMatch(/commits\/bbb2222bbbb#diff-[0-9a-f]{64}R14-R16/);
+  });
+
   it("uses the slices as parts when there are no steps", () => {
     const html = page({ steps: [] });
     expect(html).toContain("Part by part");

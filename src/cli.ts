@@ -68,7 +68,7 @@ function main(argv: string[]): number {
         `files: ${files.length} changed, +${added} -${removed}`,
         `intent record: ${g.context.intentRecord ? "found" : "MISSING (whys will be guesses unless quoted elsewhere)"}`,
         `commits: ${g.context.commits.length} (oldest first)`,
-        ...g.context.commits.map((c, i) => `  ${i + 1}. ${c.sha.slice(0, 7)} ${c.message.split("\n")[0]}`),
+        ...g.context.commits.map((c, i) => `  ${i + 1}. ${c.sha.slice(0, 7)} ${c.message.split("\n")[0]}${c.merge ? "  (merge: not a step)" : g.commitDiffs.some((d) => d.sha === c.sha) ? "" : "  (GitHub gave no diff for it)"}`),
         `issue refs: ${g.context.issueRefs.join(", ") || "none"}`,
         `docs: ${g.context.docs.map((d) => d.path).join(", ") || "none"}`,
       ].join("\n"));

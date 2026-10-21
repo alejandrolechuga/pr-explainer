@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
-import { readCommitDiffs } from "../src/commits.js";
+import { commitForCitation, readCommitDiffs } from "../src/commits.js";
 import type { PrContext } from "../src/context.js";
 import { parseDiff } from "../src/diff.js";
 import { validateBrief } from "../src/validate.js";
@@ -173,6 +173,32 @@ describe("steps", () => {
     const b = fbrief();
     b.steps[0]!.evidence = [{ kind: "code", file: "src/new.ts", line: 1 }];
     expect(messages(b)).toContain("src/new.ts is not changed by this step's commits");
+  });
+
+  it("checks each citation against the commit in the step that changed it", () => {
+    const b = fbrief();
+    b.steps = [
+      { ...b.steps[0], commits: ["aaa1111", "bbb2222"], evidence: [{ kind: "code", file: "src/cart.ts", line: 12 }, { kind: "code", file: "src/cart.ts", line: 14, endLine: 16 }] },
+      b.steps[2]!,
+    ];
+    expect(messages(b)).toBe("");
+    expect(commitForCitation(commitDiffs, { kind: "code", file: "src/cart.ts", side: "old", line: 12 })?.sha).toBe("aaa1111aaaa");
+    expect(commitForCitation(commitDiffs, { kind: "code", file: "src/cart.ts", side: "new", line: 14, endLine: 16 })?.sha).toBe("bbb2222bbbb");
+  });
+
+  it("leaves merge commits out of the steps", () => {
+    const withMerge = { ...fctx, commits: [...fctx.commits, { sha: "ddd4444dddd", message: "Merge main", merge: true }] };
+    expect(check(fbrief(), withMerge).ok).toBe(true);
+    const b = fbrief();
+    b.steps[2]!.commits = ["ccc3333", "ddd4444"];
+    expect(messages(b, withMerge)).toContain("commit ddd4444 is a merge");
+  });
+
+  it("says to gather again when a step's commit has no saved diff", () => {
+    const b = fbrief();
+    b.steps[1]!.commits = ["bbb2222"];
+    const r = validateBrief(b, parseDiff(fdiff), fctx, fdiff, commitDiffs.filter((d) => !d.sha.startsWith("bbb")));
+    expect(r.findings.map((f) => f.message).join("\n")).toContain("no saved diff for commit bbb2222");
   });
 
   it("warns when a PR with several commits has no steps", () => {

@@ -54,7 +54,8 @@ export function gatherPr(prRef: string, repoArg?: string): Gathered {
     text: run("gh", ["api", `repos/${repo}/contents/${encodeURI(path)}?ref=${pr.headRefOid}`, "-H", "Accept: application/vnd.github.raw"]).slice(0, MAX_DOC_BYTES),
   }));
 
-  const commits = pr.commits.map((c) => ({ sha: c.oid, message: `${c.messageHeadline}\n\n${c.messageBody}`.trim() }));
+  const merges = new Set(run("gh", ["api", "--paginate", `repos/${repo}/pulls/${pr.number}/commits`, "--jq", ".[] | select((.parents | length) > 1) | .sha"]).split("\n").filter(Boolean));
+  const commits = pr.commits.map((c) => ({ sha: c.oid, message: `${c.messageHeadline}\n\n${c.messageBody}`.trim(), ...(merges.has(c.oid) ? { merge: true } : {}) }));
   const body = pr.body ?? "";
   const context: PrContext = {
     version: 1,
@@ -67,10 +68,10 @@ export function gatherPr(prRef: string, repoArg?: string): Gathered {
     issues: [],
     docs,
   };
-  const commitDiffs = commits.map((c) => ({
-    sha: c.sha,
-    diff: run("gh", ["api", `repos/${repo}/commits/${c.sha}`, "-H", "Accept: application/vnd.github.diff"]),
-  }));
+  // GitHub refuses to diff some very large commits: such a commit just has no saved diff
+  const commitDiffs = commits.filter((c) => !c.merge).flatMap((c) => {
+    try { return [{ sha: c.sha, diff: run("gh", ["api", `repos/${repo}/commits/${c.sha}`, "-H", "Accept: application/vnd.github.diff"]) }]; } catch { return []; }
+  });
   return { context, diff, commitDiffs, slug: `${repo.replace("/", "-")}-${pr.number}` };
 }
 
@@ -84,10 +85,10 @@ export function gatherLocal(base: string, cwd: string): Gathered {
   } catch { /* no remote */ }
 
   const diff = run("git", ["diff", `${base}...HEAD`], root);
-  const log = run("git", ["log", "--format=%H%x00%B%x1e", `${base}..HEAD`], root);
+  const log = run("git", ["log", "--format=%H%x00%P%x00%B%x1e", `${base}..HEAD`], root);
   const commits = log.split("\x1e").map((s) => s.trim()).filter(Boolean).map((s) => {
-    const [sha = "", message = ""] = s.split("\x00");
-    return { sha, message: message.trim() };
+    const [sha = "", parents = "", message = ""] = s.split("\x00");
+    return { sha, message: message.trim(), ...(parents.trim().split(" ").length > 1 ? { merge: true } : {}) };
   }).reverse(); // oldest first, like a PR
   const tracked = run("git", ["ls-files"], root).split("\n").filter(Boolean);
   const docs = pickDocs(tracked)
@@ -105,6 +106,7 @@ export function gatherLocal(base: string, cwd: string): Gathered {
     issues: [],
     docs,
   };
-  const commitDiffs = commits.map((c) => ({ sha: c.sha, diff: run("git", ["diff", `${c.sha}^1`, c.sha], root) }));
+  // `git show` also works for a root commit, which has no parent to diff against
+  const commitDiffs = commits.filter((c) => !c.merge).map((c) => ({ sha: c.sha, diff: run("git", ["show", "--format=", "--no-color", "--no-ext-diff", c.sha], root) }));
   return { context, diff, commitDiffs, slug: `${repo.replace("/", "-")}-${head.replace(/[^\w.-]+/g, "_")}` };
 }

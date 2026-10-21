@@ -2,7 +2,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PrContext } from "./context.js";
-import { parseDiff, type DiffFile } from "./diff.js";
+import type { CitationT } from "./brief.js";
+import { lineInDiff, parseDiff, type DiffFile } from "./diff.js";
 
 export interface CommitDiff {
   sha: string;
@@ -37,4 +38,17 @@ export function findCommit(commits: { sha: string }[], prefix: string): { sha: s
 /** lines a reader goes through in these commits: a rough "minutes to read" */
 export function readingMinutes(changedLines: number): number {
   return Math.max(1, Math.round(changedLines / 40));
+}
+
+type CodeCite = Extract<CitationT, { kind: "code" }>;
+
+/** the changed file a code citation names; on the old side a renamed file's old path counts too */
+export function fileFor(files: DiffFile[], file: string, side: "new" | "old"): DiffFile | undefined {
+  return side === "old" ? files.find((f) => f.oldPath === file) ?? files.find((f) => f.path === file) : files.find((f) => f.path === file);
+}
+
+/** the first of these commits that changed every line a citation names, or null */
+export function commitForCitation(diffs: CommitDiff[], c: CodeCite): CommitDiff | null {
+  const ends = c.endLine && c.endLine !== c.line ? [c.line, c.endLine] : [c.line];
+  return diffs.find((d) => { const f = fileFor(d.files, c.file, c.side); return !!f && ends.every((n) => lineInDiff(f, c.side, n)); }) ?? null;
 }

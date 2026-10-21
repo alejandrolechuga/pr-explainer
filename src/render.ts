@@ -2,9 +2,9 @@
 // one step at a time, then deeper layers behind questions, and a way to send the review back.
 import { createHash } from "node:crypto";
 import type { Brief, CitationT } from "./brief.js";
-import { readingMinutes, type CommitDiff } from "./commits.js";
+import { commitForCitation, readingMinutes, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
-import { diffRows, excerpt, lineInDiff, type DiffFile, type Row } from "./diff.js";
+import { diffRows, excerpt, type DiffFile, type Row } from "./diff.js";
 import { highlightLines } from "./highlight.js";
 
 export interface RenderOptions {
@@ -62,6 +62,8 @@ type CodeCite = Extract<CitationT, { kind: "code" }>;
 interface CodeSource {
   rows: Map<string, Row[]>;
   url: (path: string, side?: "new" | "old", line?: number, end?: number) => string | null;
+  /** coloured lines per file and hunk, so a hunk is coloured once however often it is cited */
+  colored: Map<string, string[]>;
 }
 
 /** one step of the page: a step from the brief, or a slice when the PR has no usable commits */
@@ -89,7 +91,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return a;
   };
   const fileUrl = anchorUrl(prUrl ? `${prUrl}/files` : null);
-  const prSource: CodeSource = { rows: o.diffText ? diffRows(o.diffText) : new Map(), url: fileUrl };
+  const prSource: CodeSource = { rows: o.diffText ? diffRows(o.diffText) : new Map(), url: fileUrl, colored: new Map() };
 
   const snippet = (c: CodeCite, src: CodeSource = prSource): string | null => {
     const ex = excerpt(src.rows.get(c.file), c.side, c.line, c.endLine ?? c.line);
@@ -97,12 +99,14 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     const lo = c.line, hi = c.endLine ?? c.line;
     const label = `${c.file}:${lo}${hi !== lo ? `–${hi}` : ""}${c.side === "old" ? " (before)" : ""}`;
     const href = src.url(c.file, c.side, lo, hi);
-    // colour from the top of the hunk, so an excerpt that starts inside a comment or string is coloured right
-    const all = src.rows.get(c.file) ?? [];
-    const from = all.indexOf(ex.rows[0]!);
-    let top = from;
-    while (top > 0 && all[top - 1]!.hunk === ex.rows[0]!.hunk) top--;
-    const colored = highlightLines(all.slice(top, from + ex.rows.length).map((r) => r.text), c.file).slice(from - top);
+    // colour the whole hunk, so an excerpt that starts inside a comment or string is coloured right
+    const hunk = ex.rows[0]!.hunk;
+    const hunkRows = (src.rows.get(c.file) ?? []).filter((r) => r.hunk === hunk);
+    const key = `${c.file}\0${hunk}`;
+    const all = src.colored.get(key) ?? highlightLines(hunkRows.map((r) => r.text), c.file);
+    src.colored.set(key, all);
+    const from = hunkRows.indexOf(ex.rows[0]!);
+    const colored = all.slice(from, from + ex.rows.length);
     const body = ex.rows.map((r, i) => {
       const n = c.side === "new" ? r.new : r.old;
       const hit = n !== undefined && n >= lo && n <= hi;
@@ -174,17 +178,20 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
 
   // ---- steps: the PR's commits in order, or its slices when there are no steps
   const commitDiffs = o.commitDiffs ?? [];
+  const sources = new Map<string, CodeSource>();
   const commitSource = (sha: string): CodeSource => {
+    const known = sources.get(sha);
+    if (known) return known;
     const d = commitDiffs.find((x) => x.sha === sha);
-    return { rows: d ? diffRows(d.text) : new Map(), url: anchorUrl(prUrl ? `${prUrl}/commits/${sha}` : null) };
+    const src = { rows: d ? diffRows(d.text) : new Map<string, Row[]>(), url: anchorUrl(prUrl ? `${prUrl}/commits/${sha}` : null), colored: new Map<string, string[]>() };
+    sources.set(sha, src);
+    return src;
   };
   const stepsFromCommits = (): ViewStep[] => brief.steps.map((s) => {
     const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha ?? p);
     const mine = commitDiffs.filter((d) => shas.includes(d.sha));
     const changed = mine.reduce((n, d) => n + d.files.reduce((m, f) => m + f.added + f.removed, 0), 0);
-    const sources = shas.map((sha) => [sha, commitSource(sha)] as const);
-    const srcFor = (c: CodeCite): CodeSource =>
-      sources.find(([sha]) => mine.find((d) => d.sha === sha)?.files.some((f) => f.path === c.file && lineInDiff(f, c.side, c.line)))?.[1] ?? sources[0]![1];
+    const srcFor = (c: CodeCite): CodeSource => commitSource(commitForCitation(mine, c)?.sha ?? shas[0]!);
     const commitLinks = shas.map((sha) => {
       const msg = ctx.commits.find((c) => c.sha === sha)?.message.split("\n")[0] ?? "";
       return prUrl ? `<a href="${esc(`${prUrl}/commits/${sha}`)}" target="_blank" rel="noopener" title="${esc(msg)}"><code>${sha.slice(0, 7)}</code></a>` : `<code title="${esc(msg)}">${sha.slice(0, 7)}</code>`;
@@ -585,7 +592,8 @@ const JS = `
     const g = e.target.closest('[data-go]'); if (!g) return;
     e.preventDefault(); showStep(g.dataset.go, !g.closest('.strip'));
   });
-  const fromHash = location.hash.startsWith('#step-') ? location.hash.slice(6) : '';
+  let fromHash = '';
+  try { fromHash = location.hash.startsWith('#step-') ? decodeURIComponent(location.hash.slice(6)) : ''; } catch {}
   if (steps.length) showStep(fromHash || state.at || steps[0].dataset.step, !!fromHash);
 
   // feedback on each item
@@ -610,6 +618,10 @@ const JS = `
     ta.addEventListener('input', () => { if (state.items[id]) { state.items[id].note = ta.value; save(); } });
     paint();
   }
+  // marks from an older version of this page, on items it no longer has, are dropped
+  const onPage = new Set([...document.querySelectorAll('.fb')].map((b) => b.dataset.item));
+  for (const k of Object.keys(state.items)) if (!onPage.has(k)) delete state.items[k];
+  store.set(state);
   for (const r of document.querySelectorAll('input[name=verdict]')) {
     r.checked = r.value === state.verdict;
     r.addEventListener('change', () => { state.verdict = r.value; save(); });
