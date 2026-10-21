@@ -73,6 +73,14 @@ Work folders go to `~/.cache/pr-explainer/<repo>-<pr>/` (override with `PR_EXPLA
 
 When a PR's commits don't read as a sequence (one commit, or a messy history), the page walks through its slices instead, one part at a time.
 
+### Tests at each step
+
+`pr-explainer test-steps <workdir> --cmd "npm test" [--setup "npm ci"]`, run inside the repo, checks out every commit in a throwaway worktree and runs the command. The page then marks each step ✓ or ✕ and shows the end of the output for a failing step. It runs the PR's code on your computer, so use it only for PRs you trust.
+
+### Since you last looked
+
+The page remembers, per PR and per browser, a fingerprint of each step's changes and your mark on it. When a newer version of the PR's page opens (after new commits), unchanged steps keep their marks; changed and new steps are tagged and asked again, and the page opens on the first of them.
+
 ### Commits as steps
 
 The step view works best when each commit is one idea that leaves the code working, with a message that says what and why. The intent record template (`pr-explainer template`) has a Steps list for the same sequence.

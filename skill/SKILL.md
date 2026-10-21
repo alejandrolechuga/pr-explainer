@@ -51,6 +51,17 @@ Shape: `PE schema`. Rules:
 
 `PE validate <workdir>` — fix every ERROR and re-run until it prints no errors. Warnings may stay; mention them if they matter (for example "no intent record, the whys are guesses").
 
+## 4b. Test each step (when you trust the PR)
+
+When the PR's commits are steps and the code comes from the user or someone they trust, run the tests at every commit:
+
+`PE test-steps <workdir> --cmd "<test command>" [--setup "<install command>"]` from inside the repo (or `--dir <repo>`).
+
+- Pick the command the repo itself uses (for Node, the `test` or `qa` script in `package.json`, e.g. `npm test`; `--setup "npm ci"`). Keep it to tests that need no network or secrets.
+- It checks each commit out in a throwaway worktree, so the user's working copy is not touched. It runs the PR's code on this computer: never run it on a stranger's PR.
+- Skip it when the repo has no tests or they take more than a few minutes per commit; say so in the reply.
+- The page then shows pass/fail per step, and a failing step shows why. A step that fails while later ones pass is worth one line in your reply.
+
 ## 5. Build the review page
 
 Pick one (it refuses a brief that fails validation):
@@ -59,6 +70,8 @@ Pick one (it refuses a brief that fails validation):
 - Otherwise: `PE serve <workdir>` **in the background** — opens the page on this computer at http://127.0.0.1:7700/ and saves what they Send next to it.
 - Just a file: `PE render <workdir> --open`.
  The page shows the three sentences and where to look, then one step at a time (Looks good / Question / Change it on each, Looks good moves on), then "Tell me more" questions that open the deeper layers, then a verdict and Send (if a receiver is set) or Copy as text. A "Change it" on a step means "fix from this step on".
+
+A newer version of the PR (new commits after a review) gets a new page (`--form-id <name>-v2`). In the same browser, steps whose code did not change keep the reader's marks, and changed or new steps are tagged and asked again, so the reader only rereads what changed.
 
 Before handing it over, open it at phone width (390px) and look: diagrams readable, nothing cut off. Fix the brief and render again if not.
 
