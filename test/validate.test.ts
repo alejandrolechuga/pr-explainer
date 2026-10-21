@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { readCommitDiffs } from "../src/commits.js";
 import type { PrContext } from "../src/context.js";
 import { parseDiff } from "../src/diff.js";
 import { validateBrief } from "../src/validate.js";
@@ -130,5 +132,54 @@ describe("line ranges", () => {
     const b = goodBrief();
     b.beforeAfter[0]!.evidence = [{ ...code("src/cart.ts", 13), endLine: 30 } as never];
     expect(validateBrief(b, files, ctx).findings.map((f) => f.message)).toEqual(["src/cart.ts:30 (new side) is outside every changed hunk"]);
+  });
+});
+
+describe("steps", () => {
+  const dir = new URL("./fixtures/workdir/", import.meta.url);
+  const fctx = JSON.parse(readFileSync(new URL("context.json", dir), "utf8")) as PrContext;
+  const fdiff = readFileSync(new URL("diff.patch", dir), "utf8");
+  const commitDiffs = readCommitDiffs(fileURLToPath(dir), fctx);
+  const fbrief = () => JSON.parse(readFileSync(new URL("brief.json", dir), "utf8")) as { steps: Record<string, unknown>[] };
+  const check = (b: unknown, c: PrContext = fctx) => validateBrief(b, parseDiff(fdiff), c, fdiff, commitDiffs);
+  const messages = (b: unknown, c?: PrContext) => check(b, c).findings.map((f) => `${f.where}: ${f.message}`).join("\n");
+
+  it("accepts steps that cover every commit in order", () => {
+    expect(check(fbrief()).ok).toBe(true);
+  });
+
+  it("needs every commit in exactly one step", () => {
+    const b = fbrief();
+    b.steps.pop();
+    expect(messages(b)).toContain("commit ccc3333 is in no step");
+    const c = fbrief();
+    c.steps[2]!.commits = ["ccc3333", "aaa1111"];
+    expect(messages(c)).toContain("commit aaa1111 is already in step st-qty");
+  });
+
+  it("rejects commits that are not in the PR", () => {
+    const b = fbrief();
+    b.steps[2]!.commits = ["fff9999"];
+    expect(messages(b)).toContain('"fff9999" is not a commit of this PR');
+  });
+
+  it("only lets a step build on earlier steps", () => {
+    const b = fbrief();
+    b.steps[0]!.uses = ["st-discount"];
+    expect(messages(b)).toContain('uses "st-discount", which is not an earlier step');
+  });
+
+  it("checks a step's code against its own commits", () => {
+    const b = fbrief();
+    b.steps[0]!.evidence = [{ kind: "code", file: "src/new.ts", line: 1 }];
+    expect(messages(b)).toContain("src/new.ts is not changed by this step's commits");
+  });
+
+  it("warns when a PR with several commits has no steps", () => {
+    const b = fbrief();
+    b.steps = [];
+    const r = check(b);
+    expect(r.ok).toBe(true);
+    expect(r.findings.some((f) => f.where === "steps" && f.level === "warning")).toBe(true);
   });
 });

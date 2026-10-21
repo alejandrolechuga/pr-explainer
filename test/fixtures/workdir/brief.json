@@ -1,6 +1,18 @@
 {
   "version": 1,
   "pr": { "repo": "example/shop", "number": 7, "title": "Bulk discount <b>& friends</b>", "base": "main", "head": "bulk-discount" },
+  "glance": {
+    "does": "Cart totals now count quantity, and orders over $100 get 10% off.",
+    "forUser": "Buying two of something costs twice as much; big orders cost less.",
+    "lookAt": "The discount hard-codes 100 and 0.9 instead of using the new constants."
+  },
+  "steps": [
+    { "id": "st-qty", "title": "Count quantity", "summary": "The total multiplies each price by its quantity.", "basis": "inferred", "commits": ["aaa1111"],
+      "evidence": [{ "kind": "code", "file": "src/cart.ts", "line": 12 }] },
+    { "id": "st-discount", "title": "Discount big orders", "summary": "Totals over $100 take 10% off, and the numbers get their own file.", "why": "Applied after summing so rounding matches the receipt.", "basis": "stated", "commits": ["bbb2222"], "uses": ["st-qty"],
+      "evidence": [{ "kind": "source", "source": "commit", "ref": "bbb2222", "quote": "Applied after summing so rounding matches the receipt." }, { "kind": "code", "file": "src/cart.ts", "line": 14, "endLine": 16 }, { "kind": "code", "file": "src/new.ts", "line": 1, "endLine": 2 }] },
+    { "id": "st-cleanup", "title": "Clean up", "summary": "Old notes removed, one file renamed, a logo added.", "basis": "inferred", "commits": ["ccc3333"] }
+  ],
   "intent": {
     "summary": "Orders over $100 get 10% off, and the cart total now multiplies price by quantity instead of ignoring it.",
     "basis": "stated",

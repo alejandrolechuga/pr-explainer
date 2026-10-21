@@ -29,6 +29,25 @@ const Evidence = z.array(Citation).min(1);
 
 export const Risk = z.enum(["low", "medium", "high"]);
 
+/** One step of the PR, made of one or more of its commits, read in order. */
+export const Step = z.object({
+  id: z.string().min(1),
+  title: z.string().describe("What this step does, in a few words"),
+  summary: z.string().describe("One or two plain sentences: what this step changes"),
+  why: z.string().optional().describe("Why this step is needed or done this way"),
+  basis: Basis,
+  commits: z.array(z.string().min(7)).min(1).describe("Sha prefixes (7+ characters) of the commits in this step, oldest first; fix-up commits join the step they fix"),
+  uses: z.array(z.string()).default([]).describe("Ids of earlier steps this one builds on"),
+  evidence: z.array(Citation).default([]).describe("Code citations use this step's own commit diffs (line numbers as of that commit); quotes as usual"),
+});
+
+/** The first screen: three sentences, nothing more. */
+export const Glance = z.object({
+  does: z.string().min(5).describe("What the PR does, one sentence"),
+  forUser: z.string().min(5).describe("What is different for the user or the system, one sentence"),
+  lookAt: z.string().min(5).describe("The one thing the reader should check, one sentence"),
+});
+
 export const BriefSchema = z.object({
   version: z.literal(1),
   pr: z.object({
@@ -39,6 +58,8 @@ export const BriefSchema = z.object({
     head: z.string(),
     url: z.string().optional(),
   }),
+  glance: Glance.optional(),
+  steps: z.array(Step).default([]).describe("The PR's commits as steps in order; empty when the history is too messy to follow"),
   intent: z.object({
     summary: z.string().min(10).describe("One plain-language paragraph: what this PR is for"),
     basis: Basis,
@@ -96,6 +117,7 @@ export const BriefSchema = z.object({
 
 export type Brief = z.infer<typeof BriefSchema>;
 export type CitationT = z.infer<typeof Citation>;
+export type StepT = z.infer<typeof Step>;
 
 export function briefJsonSchema(): unknown {
   return z.toJSONSchema(BriefSchema, { io: "input" });

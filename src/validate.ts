@@ -1,5 +1,6 @@
 // Checks a brief against the diff and the context, so explanations cannot cite things that are not there.
 import { BriefSchema, type Brief, type CitationT } from "./brief.js";
+import { findCommit, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
 import { lineInDiff, type DiffFile } from "./diff.js";
 
@@ -31,8 +32,9 @@ function sourceTexts(ctx: PrContext, added: string, source: string, ref?: string
   }
 }
 
-/** `diffText`: the raw diff, so "code-comment" quotes can be checked against its added lines. */
-export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, diffText = ""): Report {
+/** `diffText`: the raw diff, so "code-comment" quotes can be checked against its added lines.
+ *  `commitDiffs`: each commit's own diff, so steps can be checked against their commits. */
+export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, diffText = "", commitDiffs: CommitDiff[] = []): Report {
   const added = addedText(diffText);
   const findings: Finding[] = [];
   const err = (where: string, message: string) => findings.push({ level: "error", where, message });
@@ -45,13 +47,13 @@ export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, d
   }
   const brief = parsed.data;
   const byPath = new Map(files.map((f) => [f.path, f] as const));
-  const byOldPath = new Map(files.map((f) => [f.oldPath, f] as const));
 
-  const checkCitation = (where: string, c: CitationT) => {
+  const checkCitation = (where: string, c: CitationT, inFiles: DiffFile[] = files) => {
     if (c.kind === "code") {
-      const f = c.side === "old" ? byOldPath.get(c.file) ?? byPath.get(c.file) : byPath.get(c.file);
+      const f = c.side === "old" ? inFiles.find((x) => x.oldPath === c.file) ?? inFiles.find((x) => x.path === c.file) : inFiles.find((x) => x.path === c.file);
       if (!f) {
-        warn(where, `${c.file} is not in this PR's diff; the citation cannot be checked`);
+        if (inFiles === files) warn(where, `${c.file} is not in this PR's diff; the citation cannot be checked`);
+        else err(where, `${c.file} is not changed by this step's commits`);
         return;
       }
       const last = c.endLine ?? c.line;
@@ -78,6 +80,8 @@ export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, d
       err(where, `marked "stated" but has no quote from the author's words; mark it "inferred" or add a source quote`);
     }
   };
+
+  checkSteps(brief, ctx, commitDiffs, checkCitation, err, warn);
 
   checkClaim("intent", brief.intent.basis, brief.intent.evidence);
   if (!ctx.intentRecord) {
@@ -107,6 +111,7 @@ export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, d
   // Ids unique; option links point somewhere.
   const ids = new Map<string, string>();
   const allIds: [string, string][] = [
+    ...brief.steps.map((s) => ["steps", s.id] as [string, string]),
     ...brief.slices.map((s) => ["slices", s.id] as [string, string]),
     ...brief.decisions.map((d) => ["decisions", d.id] as [string, string]),
     ...brief.visuals.map((v) => ["visuals", v.id] as [string, string]),
@@ -127,6 +132,47 @@ export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, d
   if (new Set(orders).size !== orders.length) warn("slices", "two slices share a readOrder");
 
   return summarize(findings, brief);
+}
+
+type Say = (where: string, message: string) => void;
+
+/** Steps cover every commit once, in order; each step only cites lines its own commits changed. */
+function checkSteps(brief: Brief, ctx: PrContext, commitDiffs: CommitDiff[], checkCitation: (w: string, c: CitationT, inFiles?: DiffFile[]) => void, err: Say, warn: Say): void {
+  if (!brief.steps.length) {
+    if (ctx.commits.length > 1) warn("steps", `the PR has ${ctx.commits.length} commits but no steps; the page will use the slices instead`);
+    return;
+  }
+  const order = new Map(ctx.commits.map((c, i) => [c.sha, i] as const));
+  const owner = new Map<string, string>();
+  const seen = new Set<string>();
+  let last = -1;
+  for (const s of brief.steps) {
+    const where = `steps.${s.id}`;
+    const shas: string[] = [];
+    for (const ref of s.commits) {
+      const hit = findCommit(ctx.commits, ref);
+      if (typeof hit === "string") { err(where, hit); continue; }
+      if (owner.has(hit.sha)) err(where, `commit ${ref} is already in step ${owner.get(hit.sha)}`);
+      owner.set(hit.sha, s.id);
+      shas.push(hit.sha);
+    }
+    const first = Math.min(...shas.map((x) => order.get(x) ?? 0));
+    if (shas.length && first < last) warn(where, "this step's commits come before the previous step's; steps should follow the commit order");
+    last = Math.max(last, ...shas.map((x) => order.get(x) ?? 0));
+    for (const u of s.uses) {
+      if (u === s.id || !seen.has(u)) err(where, `uses "${u}", which is not an earlier step`);
+    }
+    seen.add(s.id);
+    const stepFiles = commitDiffs.filter((d) => shas.includes(d.sha)).flatMap((d) => d.files);
+    s.evidence.forEach((c, j) => {
+      if (c.kind === "code" && !stepFiles.length) { err(`${where}.evidence[${j}]`, "no saved diff for this step's commits; run gather again"); return; }
+      checkCitation(`${where}.evidence[${j}]`, c, c.kind === "code" ? stepFiles : undefined);
+    });
+    if (s.basis === "stated" && !s.evidence.some((c) => c.kind === "source")) {
+      err(where, `marked "stated" but has no quote from the author's words; mark it "inferred" or add a source quote`);
+    }
+  }
+  for (const c of ctx.commits) if (!owner.has(c.sha)) err("steps", `commit ${c.sha.slice(0, 7)} is in no step`);
 }
 
 /** the added lines of a diff, joined, with comment markers removed so a quote can span lines */
