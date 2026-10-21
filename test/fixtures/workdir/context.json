@@ -4,7 +4,11 @@
   "pr": { "number": 7, "title": "Bulk discount", "base": "main", "head": "bulk-discount", "url": "https://github.com/example/shop/pull/7" },
   "body": "## Intent record\n**Goal:** Give 10% off orders over $100, and count quantity in the cart total.\n**Decisions:**\n- Apply the discount after summing — because a per-item discount would round differently.",
   "intentRecord": "**Goal:** Give 10% off orders over $100, and count quantity in the cart total.\n**Decisions:**\n- Apply the discount after summing — because a per-item discount would round differently.",
-  "commits": [{ "sha": "abc1234def", "message": "Count quantity in cart total" }],
+  "commits": [
+    { "sha": "aaa1111aaaa", "message": "Count quantity in cart total" },
+    { "sha": "bbb2222bbbb", "message": "Take 10% off orders over $100\n\nApplied after summing so rounding matches the receipt." },
+    { "sha": "ccc3333cccc", "message": "Remove old notes, rename name.ts, add logo" }
+  ],
   "issueRefs": [],
   "issues": [],
   "docs": []

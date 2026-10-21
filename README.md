@@ -2,7 +2,11 @@
 
 Understand a pull request before you judge it.
 
-`pr-explainer` and its Claude Code skill `/explain-pr` explain a PR in layers, from the big picture down:
+`pr-explainer` and its Claude Code skill `/explain-pr` explain a PR a little at a time:
+
+- **Three sentences first** — what it does, what is different for the user, what to check.
+- **Then step by step** — each commit is a step, read in order, with how the steps connect ("builds on step 1"). Approve each step as you go.
+- **Then, only if you ask**, the deeper layers:
 
 1. **Intent** — what the PR is for
 2. **Before → after** — behaviour that changes
@@ -17,7 +21,7 @@ It is not a bug hunter. It is for the moment a PR is too big, too unfamiliar, or
 ## How it works
 
 ```
-PR or branch ──gather──▶ context.json + diff.patch ──skill──▶ brief.json ──validate──▶ explanation
+PR or branch ──gather──▶ context.json + diff.patch + commits/ ──skill──▶ brief.json ──validate──▶ explanation
 ```
 
 - **gather** collects the diff, PR body, intent record, commits, issue keys and decision docs (README, CONTEXT, HANDOFF, STATUS, DECISIONS, `docs/`, ADRs).
@@ -28,6 +32,7 @@ PR or branch ──gather──▶ context.json + diff.patch ──skill──�
   - "stated" reasons with no quote behind them
   - risks without a file:line
   - changed files that no slice covers
+  - commits that are in no step, or steps that cite lines their own commit did not change
 
 The thinking needs judgment, so it lives in the skill. The checking must give the same answer every time, so it lives here.
 
@@ -64,7 +69,13 @@ Work folders go to `~/.cache/pr-explainer/<repo>-<pr>/` (override with `PR_EXPLA
 
 ## The review page
 
-`render` writes `<workdir>/page/index.html`: one self-contained page you can open in any browser (`--open` does it for you) (diagrams drawn with Mermaid from a CDN) that works on a phone. Summary and reading map open first; why, pictures, plan vs code, risks and options open on a tap. Under each item are the lines of code it points at (added lines green, removed red, cited lines in bold, a link to the same lines on GitHub). Every item has **OK / Question / Change it** with a note; the reader picks a verdict and sends it or copies it as text. A draft is kept in the browser until sent.
+`render` writes `<workdir>/page/index.html`: one self-contained page you can open in any browser (`--open` does it for you) (diagrams drawn with Mermaid from a CDN) that works on a phone. It opens with three sentences and the risks worth a look, then shows the PR one step at a time: a strip of numbered steps, and for the current step what it does, why, which steps it builds on, and its code as that commit changed it. **Looks good** moves to the next step; **Change it** means "fix from this step on". Everything else (before → after, why, pictures, plan vs code, risks, options, files) sits closed under "Tell me more". Code is shown with added lines green, removed red, cited lines in bold, and a link to the same lines on GitHub. The reader picks a verdict and sends it or copies it as text. A draft, and the step being read, are kept in the browser until sent.
+
+When a PR's commits don't read as a sequence (one commit, or a messy history), the page walks through its slices instead, one part at a time.
+
+### Commits as steps
+
+The step view works best when each commit is one idea that leaves the code working, with a message that says what and why. The intent record template (`pr-explainer template`) has a Steps list for the same sequence.
 
 Nothing to host? `pr-explainer serve <workdir>` shows the page at http://127.0.0.1:7700/ and Send saves the review to `<workdir>/answers.jsonl`, which `pr-explainer answers` reads.
 

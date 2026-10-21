@@ -9,6 +9,10 @@
 **Decisions:**
 - <decision> — because <reason>. Rejected: <alternative> (<why not>).
 
+**Steps (one commit each, oldest first):**
+1. <what the first commit does>
+2. <what the next commit does, and which step it builds on>
+
 **Shortcuts and known gaps:**
 - <what was left out on purpose, or "none">
 

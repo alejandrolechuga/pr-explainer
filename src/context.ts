@@ -6,7 +6,8 @@ export interface PrContext {
   pr: { number?: number; title: string; base: string; head: string; url?: string; headSha?: string; baseSha?: string };
   body: string;
   intentRecord: string | null;
-  commits: { sha: string; message: string }[];
+  /** oldest first; `merge` marks a merge commit, which is never a step and has no saved diff */
+  commits: { sha: string; message: string; merge?: boolean }[];
   issueRefs: string[];
   /** Issue text added by the skill from the issue tracker, keyed by id. */
   issues: { id: string; title: string; body: string }[];

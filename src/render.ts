@@ -1,7 +1,8 @@
-// Turns a checked brief into one self-contained review page: the layers, rendered diagrams,
-// a feedback control on every item, and a way to send the review back.
+// Turns a checked brief into one self-contained review page: three sentences first, then the PR
+// one step at a time, then deeper layers behind questions, and a way to send the review back.
 import { createHash } from "node:crypto";
 import type { Brief, CitationT } from "./brief.js";
+import { commitForCitation, readingMinutes, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
 import { diffRows, excerpt, type DiffFile, type Row } from "./diff.js";
 import { highlightLines } from "./highlight.js";
@@ -15,6 +16,8 @@ export interface RenderOptions {
   noteLimit?: number;
   /** the raw diff, so each code citation can show the lines it points at */
   diffText?: string;
+  /** each commit's own diff, so a step shows the code as that commit changed it */
+  commitDiffs?: CommitDiff[];
   /** validator warnings, shown in the footer */
   warnings?: string[];
 }
@@ -53,26 +56,57 @@ export function formIdFor(ctx: PrContext, prefix = "pr-"): string {
   return `${prefix}${name}-${tail}`.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
 }
 
+type CodeCite = Extract<CitationT, { kind: "code" }>;
+
+/** where a snippet's lines come from, and where its GitHub link goes */
+interface CodeSource {
+  rows: Map<string, Row[]>;
+  url: (path: string, side?: "new" | "old", line?: number, end?: number) => string | null;
+  /** coloured lines per file and hunk, so a hunk is coloured once however often it is cited */
+  colored: Map<string, string[]>;
+}
+
+/** one step of the page: a step from the brief, or a slice when the PR has no usable commits */
+interface ViewStep {
+  id: string;
+  title: string;
+  summary: string;
+  why?: string;
+  basis?: "stated" | "inferred";
+  minutes: number;
+  uses: string[];
+  meta: string;
+  body: string;
+}
+
 export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: RenderOptions): string {
   const prUrl = ctx.pr.url;
-  const fileUrl = (path: string, side?: "new" | "old", line?: number, end?: number): string | null => {
-    if (!prUrl) return null;
-    let a = `${prUrl}/files#${fileAnchor(path)}`;
+  const anchorUrl = (base: string | null) => (path: string, side?: "new" | "old", line?: number, end?: number): string | null => {
+    if (!base) return null;
+    let a = `${base}#${fileAnchor(path)}`;
     if (line) {
       const s = side === "old" ? "L" : "R";
       a += `${s}${line}${end && end !== line ? `-${s}${end}` : ""}`;
     }
     return a;
   };
+  const fileUrl = anchorUrl(prUrl ? `${prUrl}/files` : null);
+  const prSource: CodeSource = { rows: o.diffText ? diffRows(o.diffText) : new Map(), url: fileUrl, colored: new Map() };
 
-  const rows = o.diffText ? diffRows(o.diffText) : new Map<string, Row[]>();
-  const snippet = (c: Extract<CitationT, { kind: "code" }>): string | null => {
-    const ex = excerpt(rows.get(c.file), c.side, c.line, c.endLine ?? c.line);
+  const snippet = (c: CodeCite, src: CodeSource = prSource): string | null => {
+    const ex = excerpt(src.rows.get(c.file), c.side, c.line, c.endLine ?? c.line);
     if (!ex.rows.length) return null;
     const lo = c.line, hi = c.endLine ?? c.line;
     const label = `${c.file}:${lo}${hi !== lo ? `–${hi}` : ""}${c.side === "old" ? " (before)" : ""}`;
-    const href = fileUrl(c.file, c.side, lo, hi);
-    const colored = highlightLines(ex.rows.map((r) => r.text), c.file);
+    const href = src.url(c.file, c.side, lo, hi);
+    // colour the whole hunk, so an excerpt that starts inside a comment or string is coloured right
+    const hunk = ex.rows[0]!.hunk;
+    const hunkRows = (src.rows.get(c.file) ?? []).filter((r) => r.hunk === hunk);
+    const key = `${c.file}\0${hunk}`;
+    const all = src.colored.get(key) ?? highlightLines(hunkRows.map((r) => r.text), c.file);
+    src.colored.set(key, all);
+    const from = hunkRows.indexOf(ex.rows[0]!);
+    const colored = all.slice(from, from + ex.rows.length);
     const body = ex.rows.map((r, i) => {
       const n = c.side === "new" ? r.new : r.old;
       const hit = n !== undefined && n >= lo && n <= hi;
@@ -83,22 +117,23 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
       <div class="code"><table>${body}</table></div>${ex.more ? `<p class="more">${ex.more} more line${ex.more === 1 ? "" : "s"}${href ? ` — <a href="${esc(href)}" target="_blank" rel="noopener">see all on GitHub</a>` : ""}</p>` : ""}</details>`;
   };
 
-  const cite = (c: CitationT): string => {
+  const cite = (c: CitationT, src: CodeSource = prSource): string => {
     if (c.kind === "code") {
       const label = `${c.file}:${c.line}${c.endLine && c.endLine !== c.line ? `–${c.endLine}` : ""}${c.side === "old" ? " (before)" : ""}`;
-      const href = fileUrl(c.file, c.side, c.line, c.endLine);
+      const href = src.url(c.file, c.side, c.line, c.endLine);
       return href ? `<a class="cite" href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>` : `<span class="cite">${esc(label)}</span>`;
     }
     const from = SOURCE_LABEL[c.source] ?? c.source;
     const ref = c.ref ? ` ${c.source === "commit" ? c.ref.slice(0, 7) : c.ref}` : "";
     return `<span class="quote"><q>${esc(c.quote)}</q> <span class="src">— ${esc(from + ref)}</span></span>`;
   };
-  const cites = (cs: CitationT[]): string => {
-    const quotes = cs.filter((c) => c.kind === "source").map(cite).join("");
-    const codeCs = cs.filter((c): c is Extract<CitationT, { kind: "code" }> => c.kind === "code");
-    const snips = codeCs.map((c) => snippet(c));
+  /** quotes, then code snippets; `srcFor` picks where each code citation's lines come from */
+  const cites = (cs: CitationT[], srcFor: (c: CodeCite) => CodeSource = () => prSource): string => {
+    const quotes = cs.filter((c) => c.kind === "source").map((c) => cite(c)).join("");
+    const codeCs = cs.filter((c): c is CodeCite => c.kind === "code");
+    const snips = codeCs.map((c) => snippet(c, srcFor(c)));
     const shown = snips.filter((x): x is string => !!x).join("");
-    const chips = codeCs.filter((_, i) => !snips[i]).map(cite).join("");
+    const chips = codeCs.filter((_, i) => !snips[i]).map((c) => cite(c, srcFor(c))).join("");
     return `${quotes ? `<div class="quotes">${quotes}</div>` : ""}${shown ? `<div class="snips">${shown}</div>` : ""}${chips ? `<div class="cites">${chips}</div>` : ""}`;
   };
 
@@ -109,10 +144,10 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
 
   const riskPill = (r: "low" | "medium" | "high", word = "risk"): string => `<span class="pill ${r}">${r} ${word}</span>`;
 
-  const fb = (kind: string, id: string, title: string): string =>
+  const fb = (kind: string, id: string, title: string, okLabel = "OK"): string =>
     `<div class="fb" data-item="${esc(`${kind}:${id}`)}" data-kind="${esc(kind)}" data-title="${esc(title)}">
       <div class="fb-buttons" role="group" aria-label="Your feedback on this">
-        <button type="button" data-v="ok" aria-pressed="false">OK</button>
+        <button type="button" data-v="ok" aria-pressed="false">${esc(okLabel)}</button>
         <button type="button" data-v="question" aria-pressed="false">Question</button>
         <button type="button" data-v="change" aria-pressed="false">Change it</button>
       </div>
@@ -134,14 +169,103 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     ...brief.decisions.map((d) => [d.id, "why"] as [string, string]),
   ]);
 
-  const layer = (id: string, n: number, title: string, meta: string, body: string, open: boolean): string =>
-    `<details class="layer" id="${id}"${open ? " open" : ""}>
-      <summary><span class="n">${n}</span><span class="t">${esc(title)}</span><span class="meta">${esc(meta)}</span></summary>
+  const fileList = (paths: string[]): string => `<ul>${paths.map((p) => {
+    const f = byPath.get(p);
+    const href = fileUrl(p);
+    const stat = f ? `<span class="stat"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></span>` : "";
+    return `<li>${href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(p)}</a>` : esc(p)} ${stat}</li>`;
+  }).join("")}</ul>`;
+
+  // ---- steps: the PR's commits in order, or its slices when there are no steps
+  const commitDiffs = o.commitDiffs ?? [];
+  const sources = new Map<string, CodeSource>();
+  const commitSource = (sha: string): CodeSource => {
+    const known = sources.get(sha);
+    if (known) return known;
+    const d = commitDiffs.find((x) => x.sha === sha);
+    const src = { rows: d ? diffRows(d.text) : new Map<string, Row[]>(), url: anchorUrl(prUrl ? `${prUrl}/commits/${sha}` : null), colored: new Map<string, string[]>() };
+    sources.set(sha, src);
+    return src;
+  };
+  const stepsFromCommits = (): ViewStep[] => brief.steps.map((s) => {
+    const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha ?? p);
+    const mine = commitDiffs.filter((d) => shas.includes(d.sha));
+    const changed = mine.reduce((n, d) => n + d.files.reduce((m, f) => m + f.added + f.removed, 0), 0);
+    const srcFor = (c: CodeCite): CodeSource => commitSource(commitForCitation(mine, c)?.sha ?? shas[0]!);
+    const commitLinks = shas.map((sha) => {
+      const msg = ctx.commits.find((c) => c.sha === sha)?.message.split("\n")[0] ?? "";
+      return prUrl ? `<a href="${esc(`${prUrl}/commits/${sha}`)}" target="_blank" rel="noopener" title="${esc(msg)}"><code>${sha.slice(0, 7)}</code></a>` : `<code title="${esc(msg)}">${sha.slice(0, 7)}</code>`;
+    }).join(" ");
+    return {
+      id: s.id, title: s.title, summary: s.summary, ...(s.why ? { why: s.why } : {}), basis: s.basis,
+      minutes: readingMinutes(changed), uses: s.uses,
+      meta: `${shas.length === 1 ? "commit" : "commits"} ${commitLinks}`,
+      body: cites(s.evidence, srcFor),
+    };
+  });
+  const stepsFromSlices = (): ViewStep[] => slices.map((s) => ({
+    id: s.id, title: s.title, summary: s.summary, uses: [],
+    minutes: readingMinutes(s.files.reduce((n, p) => n + (byPath.get(p)?.added ?? 0) + (byPath.get(p)?.removed ?? 0), 0)),
+    meta: riskPill(s.risk),
+    body: `<details class="files"><summary>${s.files.length} file${s.files.length === 1 ? "" : "s"}</summary>${fileList(s.files)}</details>`,
+  }));
+  const fromCommits = brief.steps.length > 0;
+  const steps = fromCommits ? stepsFromCommits() : stepsFromSlices();
+  const stepNo = new Map(steps.map((s, i) => [s.id, i + 1] as const));
+  const totalMinutes = steps.reduce((n, s) => n + s.minutes, 0);
+
+  const stepLink = (id: string) => `<a href="#step-${esc(id)}" data-go="${esc(id)}">step ${stepNo.get(id)}</a>`;
+  const stepCard = (s: ViewStep, i: number): string => {
+    const usedBy = steps.filter((x) => x.uses.includes(s.id)).map((x) => x.id);
+    const links = [
+      s.uses.length ? `Builds on ${s.uses.map(stepLink).join(", ")}.` : "",
+      usedBy.length ? `Later, ${usedBy.map(stepLink).join(", ")} ${usedBy.length === 1 ? "relies" : "rely"} on this.` : "",
+    ].filter(Boolean).join(" ");
+    const prev = steps[i - 1], next = steps[i + 1];
+    return `<article class="step" id="step-${esc(s.id)}" data-step="${esc(s.id)}"${i ? " hidden" : ""}>
+      <p class="step-meta"><b>Step ${i + 1} of ${steps.length}</b> · about ${s.minutes} min · ${s.meta}</p>
+      <h3 class="step-title">${esc(s.title)}</h3>
+      <p class="step-summary">${esc(s.summary)}</p>
+      ${s.why ? `<p class="step-why"><b>Why:</b> ${esc(s.why)} ${s.basis ? basis(s.basis) : ""}</p>` : ""}
+      ${links ? `<p class="step-links">${links}</p>` : ""}
+      ${s.body}
+      ${fb("step", s.id, `Step ${i + 1}: ${s.title}`, "Looks good")}
+      <div class="pager">
+        ${prev ? `<button type="button" data-go="${esc(prev.id)}">← Step ${i}</button>` : "<span></span>"}
+        ${next ? `<button type="button" class="next" data-go="${esc(next.id)}">Step ${i + 2} →</button>` : `<a class="next" href="#review">Your verdict ↓</a>`}
+      </div>
+    </article>`;
+  };
+  const strip = `<ol class="strip" aria-label="Steps in order">${steps.map((s, i) =>
+    `<li><button type="button" data-go="${esc(s.id)}" aria-current="${i ? "false" : "step"}" title="${esc(s.title)}"><span class="dot">${i + 1}</span><span class="st">${esc(s.title)}</span></button></li>`).join("")}</ol>`;
+  const stepsSection = `<section class="steps" id="steps">
+    <h2>${fromCommits ? "Step by step" : "Part by part"} <span class="meta">${steps.length} ${fromCommits ? "steps" : "parts"} · about ${totalMinutes} min</span></h2>
+    ${fromCommits ? "" : `<p class="muted">This PR's commits do not read as steps, so it is cut into parts instead.</p>`}
+    ${strip}
+    ${steps.map(stepCard).join("")}
+  </section>`;
+
+  // ---- the first screen: three sentences and where to look
+  const g = brief.glance;
+  const lookHere = [
+    ...risks.filter((r) => r.severity !== "low").slice(0, 3).map((r) => `<li>${riskPill(r.severity)} <a href="#risk-${esc(r.id)}">${esc(r.title)}</a></li>`),
+    ...(brief.mismatches.length ? [`<li><span class="pill medium">mismatch</span> <a href="#plan">${brief.mismatches.length} place${brief.mismatches.length === 1 ? "" : "s"} where the code differs from what was said</a></li>`] : []),
+  ];
+  const glance = `<section class="glance" id="glance">
+    <p class="g-does">${esc(g?.does ?? brief.intent.summary)}</p>
+    ${g ? `<p><span class="lbl">For the user</span> ${esc(g.forUser)}</p><p><span class="lbl">Check</span> ${esc(g.lookAt)}</p>` : ""}
+    ${lookHere.length ? `<ul class="lookhere">${lookHere.join("")}</ul>` : ""}
+    ${ctx.intentRecord ? "" : `<p class="callout">No intent record: reasons marked <b>a guess</b> are a reading of the code, not the author's words.</p>`}
+  </section>`;
+
+  // ---- "tell me more": every deeper layer, closed, titled as the question it answers
+  const layer = (id: string, title: string, meta: string, body: string): string =>
+    `<details class="layer" id="${id}">
+      <summary><span class="t">${esc(title)}</span><span class="meta">${esc(meta)}</span></summary>
       <div class="layer-body">${body}</div>
     </details>`;
 
   const summaryBody = `
-    ${ctx.intentRecord ? "" : `<p class="callout">This PR has no intent record, so any reason marked <b>a guess</b> is a reading of the code, not the author's words.</p>`}
     <div class="intent">${basis(brief.intent.basis)}<p>${esc(brief.intent.summary)}</p>${cites(brief.intent.evidence)}</div>
     <h3>What changes</h3>
     <div class="ba-list">${brief.beforeAfter.map((b) => `
@@ -155,20 +279,11 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
       </article>`).join("")}
     </div>`;
 
-  const mapBody = `<ol class="slices">${slices.map((s) => {
-    const list = s.files.map((p) => {
-      const f = byPath.get(p);
-      const href = fileUrl(p);
-      const stat = f ? `<span class="stat"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></span>` : "";
-      return `<li>${href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(p)}</a>` : esc(p)} ${stat}</li>`;
-    }).join("");
-    return `<li class="slice" id="slice-${esc(s.id)}">
+  const mapBody = `<ol class="slices">${slices.map((s) => `<li class="slice" id="slice-${esc(s.id)}">
       <div class="row"><h4>${esc(s.title)}</h4>${riskPill(s.risk)}</div>
       <p>${esc(s.summary)}</p>
-      <details class="files"><summary>${s.files.length} file${s.files.length === 1 ? "" : "s"}</summary><ul>${list}</ul></details>
-      ${fb("slice", s.id, s.title)}
-    </li>`;
-  }).join("")}</ol>`;
+      <details class="files"><summary>${s.files.length} file${s.files.length === 1 ? "" : "s"}</summary>${fileList(s.files)}</details>
+    </li>`).join("")}</ol>`;
 
   const whyBody = brief.decisions.length
     ? brief.decisions.map((d) => `
@@ -244,11 +359,6 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     <div class="actions">${sendNote}<button type="button" id="copy">Copy as text</button></div>
     <p id="status" role="status" aria-live="polite"></p>`;
 
-  const nav = [
-    ["summary", "Summary"], ["map", "Reading map"], ["why", "Why"], ["pictures", "Pictures"],
-    ["plan", "Plan vs code"], ["risks", "Risks"], ["options", "Options"], ["review", "Your review"],
-  ].map(([id, l]) => `<a href="#${id}">${l}</a>`).join("");
-
   const highRisks = brief.risks.filter((r) => r.severity === "high").length;
   const config = {
     formId: o.formId,
@@ -256,6 +366,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     noteLimit: o.noteLimit ?? null,
     pr: `${ctx.repo}${ctx.pr.number ? `#${ctx.pr.number}` : ` (${ctx.pr.head})`}`,
     title: brief.pr.title,
+    stepWord: fromCommits ? "step" : "part",
   };
 
   return `<!doctype html>
@@ -274,16 +385,20 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   <h1>${esc(brief.pr.title)}</h1>
   <p class="stats"><span>${files.length} files</span> <span class="add">+${added}</span> <span class="del">−${removed}</span>${highRisks ? ` <span class="pill high">${highRisks} high risk</span>` : ""}${prUrl ? ` <a href="${esc(prUrl)}" target="_blank" rel="noopener">Open on GitHub</a>` : ""}</p>
 </header>
-<nav class="layers" aria-label="Layers"><div>${nav}</div></nav>
 <main>
-${layer("summary", 1, "In 30 seconds", `${brief.beforeAfter.length} changes`, summaryBody, true)}
-${layer("map", 2, "Reading map", `${slices.length} slices, read in this order`, mapBody, true)}
-${layer("why", 3, "Why it was done this way", `${brief.decisions.length} decisions${guesses ? `, ${guesses} guessed` : ""}`, whyBody, false)}
-${layer("pictures", 4, "Pictures", `${brief.visuals.length} diagram${brief.visuals.length === 1 ? "" : "s"}`, picsBody, false)}
-${layer("plan", 5, "Plan vs code", brief.mismatches.length ? `${brief.mismatches.length} difference${brief.mismatches.length === 1 ? "" : "s"}` : "none found", planBody, brief.mismatches.length > 0)}
-${layer("risks", 6, "What could go wrong", riskMeta(risks), risksBody, false)}
-${layer("options", 7, "What we could change", `${brief.options.length} option${brief.options.length === 1 ? "" : "s"}`, optionsBody, false)}
-<section class="layer review" id="review"><h2>Your review</h2>${reviewBody}</section>
+${glance}
+${stepsSection}
+<section class="more" id="more">
+<h2>Tell me more</h2>
+${layer("summary", "What is it for, and what changes?", `${brief.beforeAfter.length} change${brief.beforeAfter.length === 1 ? "" : "s"}`, summaryBody)}
+${layer("why", "Why was it built this way?", `${brief.decisions.length} decision${brief.decisions.length === 1 ? "" : "s"}${guesses ? `, ${guesses} guessed` : ""}`, whyBody)}
+${layer("pictures", "Show me a picture", `${brief.visuals.length} diagram${brief.visuals.length === 1 ? "" : "s"}`, picsBody)}
+${layer("plan", "Does the code match what was said?", brief.mismatches.length ? `${brief.mismatches.length} difference${brief.mismatches.length === 1 ? "" : "s"}` : "yes", planBody)}
+${layer("risks", "What could go wrong?", riskMeta(risks), risksBody)}
+${layer("options", "What could we change?", `${brief.options.length} option${brief.options.length === 1 ? "" : "s"}`, optionsBody)}
+${layer("map", "Which files go together?", `${slices.length} group${slices.length === 1 ? "" : "s"}`, mapBody)}
+</section>
+<section class="review" id="review"><h2>Your review</h2>${reviewBody}</section>
 </main>
 <footer>Every file:line and quote on this page was checked against the PR${o.warnings?.length ? ` (${o.warnings.length} note${o.warnings.length === 1 ? "" : "s"}: ${o.warnings.map(esc).join("; ")})` : ""}. Made with pr-explainer.</footer>
 <dialog id="zoom"><div class="zoom-bar"><a id="zoom-open" target="_blank" rel="noopener">Open in new tab</a><button type="button" id="zoom-close">Close</button></div><div id="zoom-body"></div></dialog>
@@ -316,20 +431,41 @@ code{font:0.88em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--co
 h1{font-size:20px;line-height:1.3;margin:4px auto 6px}
 .stats{margin:0 auto 8px;font-size:14px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;color:var(--muted)}
 .add{color:var(--add);font-variant-numeric:tabular-nums}.del{color:var(--del);font-variant-numeric:tabular-nums}
-nav.layers{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:8px 16px}
-nav.layers>div{max-width:780px;margin:0 auto;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
-nav.layers>div::-webkit-scrollbar{display:none}
-nav a{flex:none;font-size:13px;text-decoration:none;color:var(--ink);border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 11px}
 main{max-width:780px;margin:0 auto;padding:16px}
-.layer{background:var(--surface);border:1px solid var(--line);border-radius:12px;margin:0 0 14px;scroll-margin-top:60px}
+.glance,.steps,.review{background:var(--surface);border:1px solid var(--line);border-radius:12px;margin:0 0 14px;padding:14px 16px}
+.g-does{font-size:18px;line-height:1.45;margin:0 0 8px;font-weight:550}
+.glance .lbl{display:block;margin-top:8px}.glance p{margin:2px 0}
+.lookhere{list-style:none;padding:0;margin:10px 0 0;display:grid;gap:6px;font-size:15px}
+.steps h2,.more h2,.review h2{font-size:17px;margin:0 0 10px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+h2 .meta{color:var(--muted);font-size:13px;font-weight:400}
+.strip{list-style:none;padding:0 0 4px;margin:0 0 12px;display:flex;overflow-x:auto;scrollbar-width:thin}
+.strip li{flex:1 0 64px;max-width:140px;position:relative}
+.strip li+li::before{content:"";position:absolute;top:15px;right:50%;width:100%;height:2px;background:var(--line);z-index:0}
+.strip button{position:relative;z-index:1;width:100%;border:0;background:none;color:var(--muted);padding:0 2px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;line-height:1.25}
+.strip .dot{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--surface);border:2px solid var(--line);color:var(--ink);font-weight:650;font-size:13px}
+.strip .st{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:center}
+.strip button[aria-current="step"]{color:var(--ink)}
+.strip button[aria-current="step"] .dot{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
+.strip button.ok .dot{background:var(--stated-bg);border-color:var(--stated);color:var(--stated)}
+.strip button.question .dot{background:var(--guess-bg);border-color:var(--guess);color:var(--guess)}
+.strip button.change .dot{background:var(--high-bg);border-color:var(--high);color:var(--high)}
+.step{border-top:1px solid var(--line);padding-top:12px;scroll-margin-top:12px}
+.step-meta{font-size:13px;color:var(--muted);margin:0}
+.step-title{font-size:18px;margin:4px 0 2px;text-transform:none;letter-spacing:0;color:var(--ink)}
+.step-summary{font-size:16px}
+.step-why,.step-links{font-size:15px}
+.step-links{color:var(--muted)}
+.pager{display:flex;justify-content:space-between;gap:8px;margin-top:12px}
+.pager button,.pager a{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:8px;padding:8px 14px;min-height:44px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
+.pager .next{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.more{margin:22px 0 0}
+.layer{background:var(--surface);border:1px solid var(--line);border-radius:12px;margin:0 0 10px;scroll-margin-top:12px}
 .layer>summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;padding:14px 16px}
 .layer>summary::-webkit-details-marker{display:none}
-.layer>summary .n{flex:none;width:24px;height:24px;border-radius:50%;background:var(--ink);color:var(--bg);font-size:13px;display:inline-grid;place-items:center;transform:translateY(-1px)}
-.layer>summary .t{font-weight:650;font-size:17px}
+.layer>summary .t{font-weight:600;font-size:16px}
 .layer>summary .meta{color:var(--muted);font-size:13px;margin-left:auto}
 .layer:not([open])>summary .meta::after{content:" ▸"}
 .layer-body{padding:0 16px 16px}
-.review{padding:14px 16px 18px}.review h2{font-size:17px;margin:0 0 8px}
 h3{font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
 h4{font-size:16px;margin:0;line-height:1.35}
 p{margin:6px 0}
@@ -434,8 +570,31 @@ const JS = `
   const KEY = 'pr-explainer:' + cfg.formId;
   const store = { get() { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch { return {}; } },
     set(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch {} } };
-  const state = Object.assign({ items: {}, verdict: '', general: '' }, store.get());
+  const state = Object.assign({ items: {}, verdict: '', general: '', at: '' }, store.get());
   const save = () => { store.set(state); tally(); };
+
+  // one step at a time
+  const steps = [...document.querySelectorAll('.step')];
+  const stepIndex = (itemId) => steps.findIndex((s) => 'step:' + s.dataset.step === itemId);
+  function showStep(id, scroll) {
+    const el = steps.find((s) => s.dataset.step === id); if (!el) return;
+    for (const s of steps) s.hidden = s !== el;
+    for (const b of document.querySelectorAll('.strip button')) b.setAttribute('aria-current', b.dataset.go === id ? 'step' : 'false');
+    const cur = document.querySelector('.strip button[aria-current="step"]'); if (cur) cur.scrollIntoView({ block: 'nearest', inline: 'center' });
+    state.at = id; store.set(state);
+    if (scroll) document.getElementById('steps').scrollIntoView({ block: 'start' });
+  }
+  function nextStep(el) {
+    const i = steps.indexOf(el);
+    setTimeout(() => { if (steps[i + 1]) showStep(steps[i + 1].dataset.step, true); else document.getElementById('review').scrollIntoView({ block: 'start' }); }, 250);
+  }
+  document.addEventListener('click', (e) => {
+    const g = e.target.closest('[data-go]'); if (!g) return;
+    e.preventDefault(); showStep(g.dataset.go, !g.closest('.strip'));
+  });
+  let fromHash = '';
+  try { fromHash = location.hash.startsWith('#step-') ? decodeURIComponent(location.hash.slice(6)) : ''; } catch {}
+  if (steps.length) showStep(fromHash || state.at || steps[0].dataset.step, !!fromHash);
 
   // feedback on each item
   for (const box of document.querySelectorAll('.fb')) {
@@ -454,10 +613,15 @@ const JS = `
       else state.items[id] = { v: b.dataset.v, note: (cur && cur.note) || '', kind: box.dataset.kind, title: box.dataset.title };
       paint(); save();
       if (!ta.hidden) ta.focus();
+      else if (box.dataset.kind === 'step' && state.items[id]) nextStep(box.closest('.step'));
     });
     ta.addEventListener('input', () => { if (state.items[id]) { state.items[id].note = ta.value; save(); } });
     paint();
   }
+  // marks from an older version of this page, on items it no longer has, are dropped
+  const onPage = new Set([...document.querySelectorAll('.fb')].map((b) => b.dataset.item));
+  for (const k of Object.keys(state.items)) if (!onPage.has(k)) delete state.items[k];
+  store.set(state);
   for (const r of document.querySelectorAll('input[name=verdict]')) {
     r.checked = r.value === state.verdict;
     r.addEventListener('change', () => { state.verdict = r.value; save(); });
@@ -468,12 +632,19 @@ const JS = `
 
   const VERDICT = { 'approve': 'Approve', 'approve-with-changes': 'Approve, with the changes marked', 'request-changes': 'Request changes', 'questions': 'Questions first' };
   const V = { ok: 'OK', question: 'Question', change: 'Change it' };
-  const KIND = [['slice', 'Reading map'], ['why', 'Why'], ['picture', 'Pictures'], ['plan', 'Plan vs code'], ['risk', 'Risks'], ['option', 'Options']];
+  const KIND = [['step', cfg.stepWord === 'step' ? 'Steps' : 'Parts'], ['why', 'Why'], ['picture', 'Pictures'], ['plan', 'Plan vs code'], ['risk', 'Risks'], ['option', 'Options']];
+  function firstNo() {
+    const i = steps.findIndex((s) => { const it = state.items['step:' + s.dataset.step]; return it && it.v === 'change'; });
+    return i < 0 ? null : i + 1;
+  }
   function asText() {
     const lines = ['Review of ' + cfg.pr + ' — ' + cfg.title, 'Verdict: ' + (VERDICT[state.verdict] || 'not chosen')];
+    const stop = firstNo();
+    if (stop) lines.push('Fix from ' + cfg.stepWord + ' ' + stop + ' on; ' + (stop > 1 ? cfg.stepWord + 's before it stand.' : 'start there.'));
     if (state.general.trim()) lines.push('', state.general.trim());
     for (const [k, label] of KIND) {
       const its = Object.entries(state.items).filter(([, it]) => it.kind === k);
+      if (k === 'step') its.sort(([a], [b]) => stepIndex(a) - stepIndex(b));
       if (!its.length) continue;
       lines.push('', label + ':');
       for (const [id, it] of its) lines.push('- [' + V[it.v] + '] ' + it.title + ' (' + id.split(':').slice(1).join(':') + ')' + (it.note.trim() ? ': ' + it.note.trim() : ''));
@@ -485,9 +656,17 @@ const JS = `
   function tally() {
     const its = Object.values(state.items);
     const n = (v) => its.filter((i) => i.v === v).length;
-    document.getElementById('tally').textContent = its.length
-      ? 'Marked so far: ' + n('ok') + ' OK, ' + n('question') + ' questions, ' + n('change') + ' changes.'
-      : 'Mark items above with OK, Question or Change it; they are gathered here.';
+    const good = steps.filter((s) => (state.items['step:' + s.dataset.step] || {}).v === 'ok').length;
+    const stop = firstNo();
+    document.getElementById('tally').textContent = [
+      steps.length ? (good === steps.length ? 'All ' + steps.length + ' ' + cfg.stepWord + 's look good.' : good + ' of ' + steps.length + ' ' + cfg.stepWord + 's look good.') : '',
+      stop ? 'Fix from ' + cfg.stepWord + ' ' + stop + ' on.' : '',
+      its.length ? 'Marked: ' + n('ok') + ' OK, ' + n('question') + ' questions, ' + n('change') + ' changes.' : 'Mark each ' + cfg.stepWord + ' as you read; your marks are gathered here.',
+    ].filter(Boolean).join(' ');
+    for (const b of document.querySelectorAll('.strip button')) {
+      const it = state.items['step:' + b.dataset.go];
+      b.classList.toggle('ok', !!it && it.v === 'ok'); b.classList.toggle('question', !!it && it.v === 'question'); b.classList.toggle('change', !!it && it.v === 'change');
+    }
   }
   tally();
 
@@ -551,7 +730,7 @@ const JS = `
   for (const fig of document.querySelectorAll('.viz')) fig.addEventListener('click', (e) => { if (e.target.closest('[data-tab]')) draw(fig); });
   draw(document);
   if (location.hash) { const t = document.querySelector(location.hash); const d = t && t.closest('details.layer'); if (d) { d.open = true; } }
-  for (const a of document.querySelectorAll('nav a, .rel a')) a.addEventListener('click', () => { const t = document.querySelector(a.getAttribute('href')); const d = t && (t.matches('details') ? t : t.closest('details.layer')); if (d) d.open = true; });
+  for (const a of document.querySelectorAll('.rel a, .lookhere a')) a.addEventListener('click', () => { const t = document.querySelector(a.getAttribute('href')); const d = t && (t.matches('details') ? t : t.closest('details.layer')); if (d) d.open = true; });
 
   // full size
   const dlg = document.getElementById('zoom'), body = document.getElementById('zoom-body'), open = document.getElementById('zoom-open');

@@ -1,0 +1,12 @@
+diff --git a/src/cart.ts b/src/cart.ts
+index 1111111..1112222 100644
+--- a/src/cart.ts
++++ b/src/cart.ts
+@@ -10,6 +10,6 @@ export function total(items: Item[]) {
+   let sum = 0;
+   for (const i of items) {
+-    sum += i.price;
++    sum += i.price * i.qty;
+   }
+   return sum;
+ }

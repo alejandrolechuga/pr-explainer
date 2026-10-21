@@ -7,6 +7,7 @@ import { parseArgs } from "node:util";
 import { briefJsonSchema } from "./brief.js";
 import type { PrContext } from "./context.js";
 import { annotateDiff, parseDiff } from "./diff.js";
+import { findCommit, readCommitDiffs, writeCommitDiffs } from "./commits.js";
 import { fillCommand, loadConfig, configPath } from "./config.js";
 import { gatherLocal, gatherPr } from "./gather.js";
 import { formIdFor, renderPage } from "./render.js";
@@ -27,7 +28,8 @@ const USAGE = `pr-explainer <command>
 
   gather <pr-number|url> [--repo owner/name]   collect a GitHub PR (run inside its repo, or pass --repo)
   gather --base <ref>                          collect the current branch against <ref>, no PR needed
-  lines <workdir> [file]                       print the diff with old/new line numbers (for exact citations)
+  lines <workdir> [file] [--commit <sha>]      print the diff with old/new line numbers (for exact citations);
+                                               --commit: one commit's own diff (for a step's citations)
   render <workdir> [--submit json:<url>|form:<url>] [--form-id <id>] [--publish] [--open]
                                                build <workdir>/page/index.html (refuses a brief that fails validate)
   serve <workdir> [--port 7700] [--no-open]    show the page on this computer; Send saves to <workdir>/answers.jsonl
@@ -45,7 +47,7 @@ function main(argv: string[]): number {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { repo: { type: "string" }, base: { type: "string" }, json: { type: "boolean" }, dir: { type: "string" }, submit: { type: "string" }, "form-id": { type: "string" }, publish: { type: "boolean" }, open: { type: "boolean" }, port: { type: "string" }, "no-open": { type: "boolean" } },
+    options: { commit: { type: "string" }, repo: { type: "string" }, base: { type: "string" }, json: { type: "boolean" }, dir: { type: "string" }, submit: { type: "string" }, "form-id": { type: "string" }, publish: { type: "boolean" }, open: { type: "boolean" }, port: { type: "string" }, "no-open": { type: "boolean" } },
   });
 
   switch (cmd) {
@@ -56,6 +58,7 @@ function main(argv: string[]): number {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "context.json"), JSON.stringify(g.context, null, 2));
       writeFileSync(join(dir, "diff.patch"), g.diff);
+      writeCommitDiffs(dir, g.commitDiffs);
       const files = parseDiff(g.diff);
       const added = files.reduce((n, f) => n + f.added, 0);
       const removed = files.reduce((n, f) => n + f.removed, 0);
@@ -64,7 +67,8 @@ function main(argv: string[]): number {
         `pr: ${g.context.pr.title} (${g.context.pr.head} -> ${g.context.pr.base})`,
         `files: ${files.length} changed, +${added} -${removed}`,
         `intent record: ${g.context.intentRecord ? "found" : "MISSING (whys will be guesses unless quoted elsewhere)"}`,
-        `commits: ${g.context.commits.length}`,
+        `commits: ${g.context.commits.length} (oldest first)`,
+        ...g.context.commits.map((c, i) => `  ${i + 1}. ${c.sha.slice(0, 7)} ${c.message.split("\n")[0]}${c.merge ? "  (merge: not a step)" : g.commitDiffs.some((d) => d.sha === c.sha) ? "" : "  (GitHub gave no diff for it)"}`),
         `issue refs: ${g.context.issueRefs.join(", ") || "none"}`,
         `docs: ${g.context.docs.map((d) => d.path).join(", ") || "none"}`,
       ].join("\n"));
@@ -73,6 +77,15 @@ function main(argv: string[]): number {
     case "lines": {
       const dir = positionals[0];
       if (!dir) { console.error(USAGE); return 2; }
+      if (values.commit) {
+        const ctx = JSON.parse(readFileSync(join(dir, "context.json"), "utf8")) as PrContext;
+        const hit = findCommit(ctx.commits, values.commit);
+        if (typeof hit === "string") { console.error(hit); return 1; }
+        const saved = readCommitDiffs(dir, ctx).find((d) => d.sha === hit.sha);
+        if (!saved) { console.error(`no saved diff for ${values.commit}; run gather again`); return 1; }
+        console.log(annotateDiff(saved.text, positionals[1]));
+        return 0;
+      }
       console.log(annotateDiff(readFileSync(join(dir, "diff.patch"), "utf8"), positionals[1]));
       return 0;
     }
@@ -83,7 +96,7 @@ function main(argv: string[]): number {
       const diffText = readFileSync(join(dir, "diff.patch"), "utf8");
       const files = parseDiff(diffText);
       const brief = JSON.parse(readFileSync(join(dir, "brief.json"), "utf8")) as unknown;
-      const report = validateBrief(brief, files, ctx, diffText);
+      const report = validateBrief(brief, files, ctx, diffText, readCommitDiffs(dir, ctx));
       if (values.json) console.log(JSON.stringify({ ...report, brief: undefined }, null, 2));
       else console.log(formatReport(report));
       return report.ok ? 0 : 1;
@@ -186,7 +199,8 @@ function renderTo(dir: string, submit: string | undefined, formIdArg: string | u
   const diffText = readFileSync(join(dir, "diff.patch"), "utf8");
   const files = parseDiff(diffText);
   const raw = JSON.parse(readFileSync(join(dir, "brief.json"), "utf8")) as unknown;
-  const report = validateBrief(raw, files, ctx, diffText);
+  const commitDiffs = readCommitDiffs(dir, ctx);
+  const report = validateBrief(raw, files, ctx, diffText, commitDiffs);
   if (!report.ok) { console.error(formatReport(report)); console.error("not rendered: fix the errors first"); return 1; }
   if (submit && !/^(json|form):\S+$/.test(submit)) { console.error('--submit must look like "json:<url>" or "form:<url>"'); return 2; }
   const formId = formIdArg ?? formIdFor(ctx, cfg.formIdPrefix);
@@ -197,6 +211,7 @@ function renderTo(dir: string, submit: string | undefined, formIdArg: string | u
     ...(cfg.noteLimit ? { noteLimit: cfg.noteLimit } : {}),
     warnings: report.findings.map((f) => f.message),
     diffText,
+    commitDiffs,
   });
   const out = join(dir, "page");
   mkdirSync(out, { recursive: true });
