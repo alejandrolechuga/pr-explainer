@@ -152,6 +152,9 @@ describe("fingerprint", () => {
   it("stays the same when only line numbers or context move", () => {
     expect(fingerprint([["a.ts", rows(10, "x = 1")]])).toBe(fingerprint([["a.ts", rows(40, "x = 1")]]));
   });
+  it("is empty when nothing is known about the step", () => {
+    expect(fingerprint([])).toBe("");
+  });
   it("changes when what the step adds or removes changes", () => {
     expect(fingerprint([["a.ts", rows(10, "x = 1")]])).not.toBe(fingerprint([["a.ts", rows(10, "x = 2")]]));
     expect(fingerprint([["a.ts", rows(10, "x = 1")]])).not.toBe(fingerprint([["b.ts", rows(10, "x = 1")]]));

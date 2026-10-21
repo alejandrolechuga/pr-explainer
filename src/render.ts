@@ -88,6 +88,7 @@ interface ViewStep {
 
 /** a short hash of the lines a step adds and removes, per file, so moved line numbers do not count as a change */
 export function fingerprint(parts: [string, Row[]][]): string {
+  if (!parts.length) return ""; // nothing known about the step: it never counts as unchanged
   const h = createHash("sha256");
   for (const [path, rows] of [...parts].sort(([a], [b]) => a.localeCompare(b))) {
     h.update(`${path}\n`);
@@ -205,10 +206,12 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return src;
   };
   /** the result at the step's last commit that was tested */
+  const commitOrder = new Map(ctx.commits.map((c, i) => [c.sha, i] as const));
   const checkOf = (shas: string[]): CheckResult | undefined =>
-    [...shas].reverse().map((sha) => o.checks?.results.find((r) => r.sha === sha)).find(Boolean);
+    [...shas].sort((a, b) => (commitOrder.get(b) ?? 0) - (commitOrder.get(a) ?? 0)).map((sha) => o.checks?.results.find((r) => r.sha === sha)).find(Boolean);
   const stepsFromCommits = (): ViewStep[] => brief.steps.map((s) => {
     const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha ?? p);
+    const check = checkOf(shas);
     const mine = commitDiffs.filter((d) => shas.includes(d.sha));
     const changed = mine.reduce((n, d) => n + d.files.reduce((m, f) => m + f.added + f.removed, 0), 0);
     const srcFor = (c: CodeCite): CodeSource => commitSource(commitForCitation(mine, c)?.sha ?? shas[0]!);
@@ -219,9 +222,9 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return {
       id: s.id, title: s.title, summary: s.summary, ...(s.why ? { why: s.why } : {}), basis: s.basis,
       minutes: readingMinutes(changed), uses: s.uses,
-      ...(checkOf(shas) ? { check: checkOf(shas)! } : {}),
+      ...(check ? { check } : {}),
       meta: `${shas.length === 1 ? "commit" : "commits"} ${commitLinks}`,
-      fp: fingerprint(shas.flatMap((sha) => [...commitSource(sha).rows].map(([p, r]) => [p, r] as [string, Row[]]))),
+      fp: fingerprint(shas.flatMap((sha) => [...commitSource(sha).rows])),
       body: cites(s.evidence, srcFor),
     };
   });
@@ -472,7 +475,7 @@ h2 .meta{color:var(--muted);font-size:13px;font-weight:400}
 .strip li+li::before{content:"";position:absolute;top:23px;right:50%;width:100%;height:2px;background:var(--line);z-index:0}
 .strip button{position:relative;z-index:1;width:100%;border:0;background:none;color:var(--muted);padding:0 2px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;line-height:1.25}
 .strip .dot{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--surface);border:2px solid var(--line);color:var(--ink);font-weight:650;font-size:13px}
-.strip .st{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:center}
+.strip .st{overflow-wrap:normal;word-break:normal;hyphens:auto;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:center}
 .strip button[aria-current="step"]{color:var(--ink)}
 .strip button[aria-current="step"] .dot{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
 .strip button.ok .dot{background:var(--stated-bg);border-color:var(--stated);color:var(--stated)}
@@ -634,42 +637,49 @@ const JS = `
   let fromHash = '';
   try { fromHash = location.hash.startsWith('#step-') ? decodeURIComponent(location.hash.slice(6)) : ''; } catch {}
 
-  // since you last looked: a step whose code is unchanged keeps the mark it had on an earlier
-  // version of this PR's page (same browser); changed and new steps ask again
+  // since you last looked: each version of a PR's page is remembered (per browser) in the order it
+  // was first opened. A page compares itself with the version opened just before it: a step whose
+  // code is unchanged keeps the mark it had there; changed and new steps are tagged and ask again.
   const PKEY = 'pr-explainer:pr:' + cfg.pr;
-  let before = null;
-  try { before = JSON.parse(localStorage.getItem(PKEY) || 'null'); } catch {}
+  let hist = { order: [], pages: {} };
+  try { hist = Object.assign(hist, JSON.parse(localStorage.getItem(PKEY) || '{}')); } catch {}
+  if (!hist.order.includes(cfg.formId)) hist.order = [...hist.order, cfg.formId].slice(-10);
+  const before = hist.pages[hist.order[hist.order.indexOf(cfg.formId) - 1]] || null;
   function remember() {
     const byFp = {}, byId = {};
     for (const s of steps) {
       byId[s.dataset.step] = s.dataset.fp;
       const it = state.items['step:' + s.dataset.step];
-      if (it) byFp[s.dataset.fp] = { v: it.v, note: it.note };
+      if (it && s.dataset.fp) byFp[s.dataset.fp] = { v: it.v, note: it.note };
     }
-    try { localStorage.setItem(PKEY, JSON.stringify({ page: cfg.formId, byFp, byId })); } catch {}
+    hist.pages[cfg.formId] = { byFp, byId };
+    for (const k of Object.keys(hist.pages)) if (!hist.order.includes(k)) delete hist.pages[k];
+    try { localStorage.setItem(PKEY, JSON.stringify(hist)); } catch {}
   }
   const since = {};
-  if (before && before.page !== cfg.formId && steps.length) {
-    const oldFps = new Set(Object.values(before.byId || {}));
-    steps.forEach((s) => {
-      const id = s.dataset.step, fp = s.dataset.fp, mark = (before.byFp || {})[fp];
-      if (oldFps.has(fp)) {
+  if (before && steps.length) {
+    const oldFps = new Set(Object.values(before.byId || {}).filter(Boolean));
+    for (const s of steps) {
+      const id = s.dataset.step, fp = s.dataset.fp, mark = fp && (before.byFp || {})[fp];
+      if (fp && oldFps.has(fp)) {
         since[id] = 'same';
-        if (mark && !state.items['step:' + id]) state.items['step:' + id] = { v: mark.v, note: mark.note || '', kind: 'step', title: s.querySelector('.fb').dataset.title };
+        if (mark && !state.imported && !state.items['step:' + id]) state.items['step:' + id] = { v: mark.v, note: mark.note || '', kind: 'step', title: s.querySelector('.fb').dataset.title };
       } else since[id] = id in (before.byId || {}) ? 'changed' : 'new';
       if (since[id] !== 'same') {
         const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = since[id] === 'new' ? 'new since you looked' : 'changed since you looked';
         s.querySelector('.step-meta').append(' ', tag);
         const b = document.querySelector('.strip button[data-go="' + CSS.escape(id) + '"]'); if (b) b.classList.add('since-' + since[id]);
       }
-    });
+    }
+    state.imported = true;
     const nums = (k) => steps.map((s, i) => since[s.dataset.step] === k ? i + 1 : 0).filter(Boolean);
     const list = (ns) => ns.length === 1 ? cfg.stepWord + ' ' + ns[0] : cfg.stepWord + 's ' + ns.slice(0, -1).join(', ') + ' and ' + ns.at(-1);
+    const cap = (t) => t.replace(/^./, (c) => c.toUpperCase());
     const same = nums('same'), changed = nums('changed'), fresh = nums('new');
     const parts = [];
     if (same.length) parts.push((same.length === steps.length ? 'Nothing changed' : list(same) + ' did not change') + '; your marks there are kept.');
-    if (changed.length) parts.push(list(changed).replace(/^./, (c) => c.toUpperCase()) + ' changed.');
-    if (fresh.length) parts.push(list(fresh).replace(/^./, (c) => c.toUpperCase()) + (fresh.length === 1 ? ' is new.' : ' are new.'));
+    if (changed.length) parts.push(cap(list(changed)) + ' changed.');
+    if (fresh.length) parts.push(cap(list(fresh)) + (fresh.length === 1 ? ' is new.' : ' are new.'));
     const box = document.getElementById('since');
     box.textContent = 'Since you last looked: ' + parts.join(' ');
     box.hidden = false;
@@ -677,7 +687,7 @@ const JS = `
   }
   remember();
   const firstOpen = steps.find((s) => since[s.dataset.step] && since[s.dataset.step] !== 'same') || steps.find((s) => !state.items['step:' + s.dataset.step]);
-  if (steps.length) showStep(fromHash || (Object.keys(since).length && firstOpen ? firstOpen.dataset.step : '') || state.at || steps[0].dataset.step, !!fromHash);
+  if (steps.length) showStep(fromHash || state.at || (Object.keys(since).length && firstOpen ? firstOpen.dataset.step : '') || steps[0].dataset.step, !!fromHash);
 
   // feedback on each item
   for (const box of document.querySelectorAll('.fb')) {

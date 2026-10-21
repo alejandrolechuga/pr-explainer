@@ -39,6 +39,24 @@ describe("runChecks", () => {
     expect(c.results[0]!.tail).toMatch(/setup failed:\nno network/);
   });
 
+  it("starts each commit clean, and tries a failed setup again at the next commit", () => {
+    const { dir, shas } = repo();
+    const counter = join(mkdtempSync(join(tmpdir(), "pe-count-")), "n");
+    const ctx = { version: 1, repo: "t", pr: { title: "t", base: "main", head: "x" }, body: "", intentRecord: null, commits: shas.map((sha) => ({ sha, message: "m" })), issueRefs: [], issues: [], docs: [] } as PrContext;
+    // setup fails the first time only; the test dirties a tracked file and leaves a stray file behind
+    const setup = `n=$(cat ${counter} 2>/dev/null || echo 0); echo $((n+1)) > ${counter}; [ "$n" -gt 0 ]`;
+    const c = runChecks(ctx, { repoDir: dir, setup, cmd: 'test ! -e stray.txt && grep -q good value.txt; r=$?; echo dirty > value.txt; touch stray.txt; exit $r' });
+    expect(c.results.map((r) => r.ok)).toEqual([false, false, true]);
+    expect(c.results[0]!.tail).toMatch(/^setup failed/);
+    expect(c.results[1]!.tail).not.toMatch(/setup failed/);
+  });
+
+  it("refuses a PR with nothing to test", () => {
+    const { dir } = repo();
+    const ctx = { version: 1, repo: "t", pr: { title: "t", base: "main", head: "x" }, body: "", intentRecord: null, commits: [{ sha: "x", message: "m", merge: true }], issueRefs: [], issues: [], docs: [] } as PrContext;
+    expect(() => runChecks(ctx, { repoDir: dir, cmd: "true" })).toThrow(/no commits to test/);
+  });
+
   it("says which commits are missing", () => {
     const { dir } = repo();
     const ctx = { version: 1, repo: "t", pr: { title: "t", base: "main", head: "x" }, body: "", intentRecord: null, commits: [{ sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", message: "m" }], issueRefs: [], issues: [], docs: [] } as PrContext;

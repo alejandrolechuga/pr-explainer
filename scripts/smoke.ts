@@ -174,9 +174,14 @@ try {
     assert.ok(await p1.locator("#step-st-cleanup").isVisible(), "the page opens on the changed step");
     assert.match((await p1.textContent("#step-st-cleanup .step-meta")) ?? "", /changed since you looked/);
     await p1.screenshot({ path: join(OUT, "phone-since.png") });
+    await p1.reload();
+    assert.match((await p1.textContent("#since")) ?? "", /Step 3 changed/, "the comparison survives a reload");
+    cli("render", work, "--submit", `json:${base}/feedback`, "--form-id", "since-v1");
+    await p1.goto(`${base}/page`);
+    assert.ok(await p1.locator("#since").isHidden(), "an older version does not compare itself with a newer one");
     writeFileSync(patch, original);
     await ctxL.close();
-    ok("since you last looked: unchanged steps keep their marks, a changed step is tagged and opens first");
+    ok("since you last looked: unchanged steps keep their marks, a changed step is tagged and opens first, kept on reload, older pages untouched");
   }
 
   // ---- form mode (an inbox that takes a plain form post)

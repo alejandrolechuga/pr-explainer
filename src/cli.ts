@@ -97,6 +97,7 @@ function main(argv: string[]): number {
     case "test-steps": {
       const dir = positionals[0];
       if (!dir || !values.cmd) { console.error(USAGE); return 2; }
+      if (values.timeout && !/^[1-9]\d*$/.test(values.timeout)) { console.error("--timeout: whole seconds, e.g. 600"); return 2; }
       const ctx = JSON.parse(readFileSync(join(dir, "context.json"), "utf8")) as PrContext;
       const checks = runChecks(ctx, {
         repoDir: resolve(values.dir ?? process.cwd()),
