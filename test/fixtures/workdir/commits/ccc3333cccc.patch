@@ -1,0 +1,15 @@
+diff --git a/old.txt b/old.txt
+deleted file mode 100644
+index 4444444..0000000
+--- a/old.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-gone
+diff --git a/a/name.ts b/b/name.ts
+similarity index 100%
+rename from a/name.ts
+rename to b/name.ts
+diff --git a/logo.png b/logo.png
+new file mode 100644
+index 0000000..5555555
+Binary files /dev/null and b/logo.png differ

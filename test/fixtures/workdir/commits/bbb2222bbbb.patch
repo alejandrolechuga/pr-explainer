@@ -1,0 +1,21 @@
+diff --git a/src/cart.ts b/src/cart.ts
+index 1112222..2222222 100644
+--- a/src/cart.ts
++++ b/src/cart.ts
+@@ -11,5 +11,8 @@ export function total(items: Item[]) {
+   for (const i of items) {
+     sum += i.price * i.qty;
+   }
++  if (sum > 100) {
++    sum = sum * 0.9;
++  }
+   return sum;
+ }
+diff --git a/src/new.ts b/src/new.ts
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/src/new.ts
+@@ -0,0 +1,2 @@
++export const DISCOUNT = 0.9;
++export const THRESHOLD = 100;

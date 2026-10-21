@@ -31,6 +31,8 @@ function pickDocs(paths: string[]): string[] {
 export interface Gathered {
   context: PrContext;
   diff: string;
+  /** each commit's own diff, oldest first */
+  commitDiffs: { sha: string; diff: string }[];
   slug: string;
 }
 
@@ -65,7 +67,11 @@ export function gatherPr(prRef: string, repoArg?: string): Gathered {
     issues: [],
     docs,
   };
-  return { context, diff, slug: `${repo.replace("/", "-")}-${pr.number}` };
+  const commitDiffs = commits.map((c) => ({
+    sha: c.sha,
+    diff: run("gh", ["api", `repos/${repo}/commits/${c.sha}`, "-H", "Accept: application/vnd.github.diff"]),
+  }));
+  return { context, diff, commitDiffs, slug: `${repo.replace("/", "-")}-${pr.number}` };
 }
 
 export function gatherLocal(base: string, cwd: string): Gathered {
@@ -82,7 +88,7 @@ export function gatherLocal(base: string, cwd: string): Gathered {
   const commits = log.split("\x1e").map((s) => s.trim()).filter(Boolean).map((s) => {
     const [sha = "", message = ""] = s.split("\x00");
     return { sha, message: message.trim() };
-  });
+  }).reverse(); // oldest first, like a PR
   const tracked = run("git", ["ls-files"], root).split("\n").filter(Boolean);
   const docs = pickDocs(tracked)
     .filter((p) => existsSync(join(root, p)))
@@ -91,7 +97,7 @@ export function gatherLocal(base: string, cwd: string): Gathered {
   const context: PrContext = {
     version: 1,
     repo,
-    pr: { title: commits.at(-1)?.message.split("\n")[0] ?? head, base, head },
+    pr: { title: commits[0]?.message.split("\n")[0] ?? head, base, head },
     body: "",
     intentRecord: null,
     commits,
@@ -99,5 +105,6 @@ export function gatherLocal(base: string, cwd: string): Gathered {
     issues: [],
     docs,
   };
-  return { context, diff, slug: `${repo.replace("/", "-")}-${head.replace(/[^\w.-]+/g, "_")}` };
+  const commitDiffs = commits.map((c) => ({ sha: c.sha, diff: run("git", ["diff", `${c.sha}^1`, c.sha], root) }));
+  return { context, diff, commitDiffs, slug: `${repo.replace("/", "-")}-${head.replace(/[^\w.-]+/g, "_")}` };
 }
