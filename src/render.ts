@@ -76,7 +76,19 @@ interface ViewStep {
   minutes: number;
   uses: string[];
   meta: string;
+  /** what the step changed, ignoring line numbers: equal when a later version of the PR left it alone */
+  fp: string;
   body: string;
+}
+
+/** a short hash of the lines a step adds and removes, per file, so moved line numbers do not count as a change */
+export function fingerprint(parts: [string, Row[]][]): string {
+  const h = createHash("sha256");
+  for (const [path, rows] of [...parts].sort(([a], [b]) => a.localeCompare(b))) {
+    h.update(`${path}\n`);
+    for (const r of rows) if (r.kind !== " ") h.update(`${r.kind}${r.text}\n`);
+  }
+  return h.digest("hex").slice(0, 16);
 }
 
 export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: RenderOptions): string {
@@ -200,6 +212,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
       id: s.id, title: s.title, summary: s.summary, ...(s.why ? { why: s.why } : {}), basis: s.basis,
       minutes: readingMinutes(changed), uses: s.uses,
       meta: `${shas.length === 1 ? "commit" : "commits"} ${commitLinks}`,
+      fp: fingerprint(shas.flatMap((sha) => [...commitSource(sha).rows].map(([p, r]) => [p, r] as [string, Row[]]))),
       body: cites(s.evidence, srcFor),
     };
   });
@@ -207,6 +220,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     id: s.id, title: s.title, summary: s.summary, uses: [],
     minutes: readingMinutes(s.files.reduce((n, p) => n + (byPath.get(p)?.added ?? 0) + (byPath.get(p)?.removed ?? 0), 0)),
     meta: riskPill(s.risk),
+    fp: fingerprint(s.files.map((p) => [p, prSource.rows.get(p) ?? []])),
     body: `<details class="files"><summary>${s.files.length} file${s.files.length === 1 ? "" : "s"}</summary>${fileList(s.files)}</details>`,
   }));
   const fromCommits = brief.steps.length > 0;
@@ -222,7 +236,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
       usedBy.length ? `Later, ${usedBy.map(stepLink).join(", ")} ${usedBy.length === 1 ? "relies" : "rely"} on this.` : "",
     ].filter(Boolean).join(" ");
     const prev = steps[i - 1], next = steps[i + 1];
-    return `<article class="step" id="step-${esc(s.id)}" data-step="${esc(s.id)}"${i ? " hidden" : ""}>
+    return `<article class="step" id="step-${esc(s.id)}" data-step="${esc(s.id)}" data-fp="${s.fp}"${i ? " hidden" : ""}>
       <p class="step-meta"><b>Step ${i + 1} of ${steps.length}</b> · about ${s.minutes} min · ${s.meta}</p>
       <h3 class="step-title">${esc(s.title)}</h3>
       <p class="step-summary">${esc(s.summary)}</p>
@@ -241,6 +255,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   const stepsSection = `<section class="steps" id="steps">
     <h2>${fromCommits ? "Step by step" : "Part by part"} <span class="meta">${steps.length} ${fromCommits ? "steps" : "parts"} · about ${totalMinutes} min</span></h2>
     ${fromCommits ? "" : `<p class="muted">This PR's commits do not read as steps, so it is cut into parts instead.</p>`}
+    <p class="since" id="since" hidden></p>
     ${strip}
     ${steps.map(stepCard).join("")}
   </section>`;
@@ -449,6 +464,9 @@ h2 .meta{color:var(--muted);font-size:13px;font-weight:400}
 .strip button.ok .dot{background:var(--stated-bg);border-color:var(--stated);color:var(--stated)}
 .strip button.question .dot{background:var(--guess-bg);border-color:var(--guess);color:var(--guess)}
 .strip button.change .dot{background:var(--high-bg);border-color:var(--high);color:var(--high)}
+.since{background:var(--stated-bg);border-left:3px solid var(--stated);padding:8px 12px;border-radius:6px;font-size:14px;margin:0 0 12px}
+.strip button.since-changed .dot::after,.strip button.since-new .dot::after{content:"";position:absolute;margin:-22px 0 0 22px;width:9px;height:9px;border-radius:50%;background:var(--medium);border:2px solid var(--surface)}
+.tag{display:inline-block;font-size:12px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--medium-bg);color:var(--medium)}
 .step{border-top:1px solid var(--line);padding-top:12px;scroll-margin-top:12px}
 .step-meta{font-size:13px;color:var(--muted);margin:0}
 .step-title{font-size:18px;margin:4px 0 2px;text-transform:none;letter-spacing:0;color:var(--ink)}
@@ -571,7 +589,7 @@ const JS = `
   const store = { get() { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch { return {}; } },
     set(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch {} } };
   const state = Object.assign({ items: {}, verdict: '', general: '', at: '' }, store.get());
-  const save = () => { store.set(state); tally(); };
+  function save() { store.set(state); tally(); remember(); }
 
   // one step at a time
   const steps = [...document.querySelectorAll('.step')];
@@ -594,7 +612,51 @@ const JS = `
   });
   let fromHash = '';
   try { fromHash = location.hash.startsWith('#step-') ? decodeURIComponent(location.hash.slice(6)) : ''; } catch {}
-  if (steps.length) showStep(fromHash || state.at || steps[0].dataset.step, !!fromHash);
+
+  // since you last looked: a step whose code is unchanged keeps the mark it had on an earlier
+  // version of this PR's page (same browser); changed and new steps ask again
+  const PKEY = 'pr-explainer:pr:' + cfg.pr;
+  let before = null;
+  try { before = JSON.parse(localStorage.getItem(PKEY) || 'null'); } catch {}
+  function remember() {
+    const byFp = {}, byId = {};
+    for (const s of steps) {
+      byId[s.dataset.step] = s.dataset.fp;
+      const it = state.items['step:' + s.dataset.step];
+      if (it) byFp[s.dataset.fp] = { v: it.v, note: it.note };
+    }
+    try { localStorage.setItem(PKEY, JSON.stringify({ page: cfg.formId, byFp, byId })); } catch {}
+  }
+  const since = {};
+  if (before && before.page !== cfg.formId && steps.length) {
+    const oldFps = new Set(Object.values(before.byId || {}));
+    steps.forEach((s) => {
+      const id = s.dataset.step, fp = s.dataset.fp, mark = (before.byFp || {})[fp];
+      if (oldFps.has(fp)) {
+        since[id] = 'same';
+        if (mark && !state.items['step:' + id]) state.items['step:' + id] = { v: mark.v, note: mark.note || '', kind: 'step', title: s.querySelector('.fb').dataset.title };
+      } else since[id] = id in (before.byId || {}) ? 'changed' : 'new';
+      if (since[id] !== 'same') {
+        const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = since[id] === 'new' ? 'new since you looked' : 'changed since you looked';
+        s.querySelector('.step-meta').append(' ', tag);
+        const b = document.querySelector('.strip button[data-go="' + CSS.escape(id) + '"]'); if (b) b.classList.add('since-' + since[id]);
+      }
+    });
+    const nums = (k) => steps.map((s, i) => since[s.dataset.step] === k ? i + 1 : 0).filter(Boolean);
+    const list = (ns) => ns.length === 1 ? cfg.stepWord + ' ' + ns[0] : cfg.stepWord + 's ' + ns.slice(0, -1).join(', ') + ' and ' + ns.at(-1);
+    const same = nums('same'), changed = nums('changed'), fresh = nums('new');
+    const parts = [];
+    if (same.length) parts.push((same.length === steps.length ? 'Nothing changed' : list(same) + ' did not change') + '; your marks there are kept.');
+    if (changed.length) parts.push(list(changed).replace(/^./, (c) => c.toUpperCase()) + ' changed.');
+    if (fresh.length) parts.push(list(fresh).replace(/^./, (c) => c.toUpperCase()) + (fresh.length === 1 ? ' is new.' : ' are new.'));
+    const box = document.getElementById('since');
+    box.textContent = 'Since you last looked: ' + parts.join(' ');
+    box.hidden = false;
+    store.set(state);
+  }
+  remember();
+  const firstOpen = steps.find((s) => since[s.dataset.step] && since[s.dataset.step] !== 'same') || steps.find((s) => !state.items['step:' + s.dataset.step]);
+  if (steps.length) showStep(fromHash || (Object.keys(since).length && firstOpen ? firstOpen.dataset.step : '') || state.at || steps[0].dataset.step, !!fromHash);
 
   // feedback on each item
   for (const box of document.querySelectorAll('.fb')) {
