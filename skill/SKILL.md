@@ -1,12 +1,12 @@
 ---
 name: explain-pr
-description: Explain a pull request to the user in layers — intent first, then before→after, slices in reading order, why each decision was made (stated vs guessed), pictures, what could go wrong, and what could change. Builds a checked brief with the pr-explainer CLI. Use when the user says "explain this PR", "explain PR 12", "what does this PR do", "walk me through this PR", "help me understand this change", or invokes /explain-pr. Not a bug hunt; for that use /code-review.
+description: Explain a pull request to the user — three sentences first, then the PR one commit (step) at a time, then deeper layers on request (before→after, why each decision was made, stated vs guessed, pictures, what could go wrong, what could change). Builds a checked brief with the pr-explainer CLI. Use when the user says "explain this PR", "explain PR 12", "what does this PR do", "walk me through this PR", "help me understand this change", or invokes /explain-pr. Not a bug hunt; for that use /code-review.
 ---
 
 # Explain a PR
 
-Goal: the reader understands what a PR is for and what it changes **before** judging it.
-Order matters: intent → before/after → slices → why → pictures → risks → options.
+Goal: the reader understands what a PR is for and what it changes **before** judging it, without reading everything at once.
+The page opens with three sentences, then walks the PR step by step (its commits, in order), and keeps every deeper layer closed behind a question.
 
 Tool: the `pr-explainer` command (call it `PE` below; install: see the pr-explainer README). Run it from inside the target repo. If it is not on PATH, stop and tell the user how to install it.
 
@@ -15,20 +15,28 @@ Tool: the `pr-explainer` command (call it `PE` below; install: see the pr-explai
 - PR: `PE gather <number|url>` (add `--repo owner/name` when not inside the repo).
 - No PR yet: `PE gather --base main` on the current branch.
 
-It prints the work folder (`.../.pr-explainer/<repo>-<pr>/` with `context.json` and `diff.patch`) and whether an intent record was found.
+It prints the work folder (with `context.json`, `diff.patch`, and `commits/<sha>.patch` for each commit), whether an intent record was found, and the commits oldest first.
 
 If `issue refs` lists tracker keys (e.g. ABC-123) and an issue-tracker tool is available (Linear, Jira, GitHub issues via `gh`), fetch each and add it to `context.json` → `issues: [{ id, title, body }]` so quotes from it can be checked.
 
 ## 2. Read
 
 - Read `context.json` (PR body, intent record, commits, decision docs) **before** the diff, so you read the code knowing what it was meant to do.
-- Read the diff with line numbers: `PE lines <workdir> > <workdir>/lines.txt`, then read that file (or `PE lines <workdir> <file>` for one file). Left column = old line, right = new line; cite those numbers. For a big diff (over ~2,000 changed lines) go file by file; open surrounding code in the repo when a hunk makes no sense alone.
+- Read the diff with line numbers: `PE lines <workdir> > <workdir>/lines.txt`, then read that file (or `PE lines <workdir> <file>` for one file). Left column = old line, right = new line; cite those numbers. For a step, read its own commit: `PE lines <workdir> --commit <sha>`; a step's citations use **that commit's** line numbers. For a big diff (over ~2,000 changed lines) go file by file; open surrounding code in the repo when a hunk makes no sense alone.
 
 ## 3. Write `brief.json` in the work folder
 
 Shape: `PE schema`. Rules:
 
 - **Plain words.** Write for someone who did not see the code. No invented terms. Short sentences.
+- **glance** (the first screen, three sentences): `does` what the PR does; `forUser` what is different for the user or the system; `lookAt` the one thing the reader should check. One sentence each, no jargon. This is what the reader sees first; make it count.
+- **steps**: the commits as a sequence, oldest first.
+  - One step per commit. Fold fix-up commits ("fix typo", "wip", "address review") into the step they fix.
+  - `summary`: one or two sentences. `why`: only when a commit message, the intent record or a doc says it; then `basis: "stated"` with the quote (`source: "commit", ref: <sha>`). Otherwise leave `why` out or mark it inferred.
+  - `uses`: the earlier steps this one builds on (a function added in step 1 and called in step 3 → step 3 uses step 1). This is how the page connects the sequence.
+  - `evidence`: one to three code citations that show the heart of the step, numbered as in that commit's diff.
+  - A commit message that says one thing while its code does another is a **mismatch** (quote the commit).
+  - Leave `steps` empty when the history cannot be read as a sequence: one commit, or commits that mix unrelated changes or undo each other. The page then shows the slices one at a time instead.
 - **intent.summary**: one paragraph, what the PR is for and who notices.
 - **beforeAfter**: behaviour per area, as the user or the system experiences it, not "function X changed".
 - **slices**: group changed files by concern (not by folder). Every changed file in exactly one slice where possible; `readOrder` 1 = read first (usually the core idea, then its callers, then tests and cleanup). Risk per slice.
@@ -50,7 +58,7 @@ Pick one (it refuses a brief that fails validation):
 - The user's settings have a `publishCommand`: `PE render <workdir> --publish` — prints the page address.
 - Otherwise: `PE serve <workdir>` **in the background** — opens the page on this computer at http://127.0.0.1:7700/ and saves what they Send next to it.
 - Just a file: `PE render <workdir> --open`.
- The page shows every layer, draws the diagrams, and lets the reader mark each item OK / Question / Change it, pick a verdict, and Send (if a receiver is set) or Copy as text.
+ The page shows the three sentences and where to look, then one step at a time (Looks good / Question / Change it on each, Looks good moves on), then "Tell me more" questions that open the deeper layers, then a verdict and Send (if a receiver is set) or Copy as text. A "Change it" on a step means "fix from this step on".
 
 Before handing it over, open it at phone width (390px) and look: diagrams readable, nothing cut off. Fix the brief and render again if not.
 
@@ -59,11 +67,11 @@ Before handing it over, open it at phone width (390px) and look: diagrams readab
 In chat, keep it short, top layer first:
 
 1. The page link (or file path).
-2. **In 30 seconds** — intent paragraph + 2–4 before→after lines. Say if there is no intent record.
-3. **Reading map** — slices in read order, one line each.
-4. The one or two risks that matter most, if any are high or medium.
+2. The three glance sentences. Say if there is no intent record.
+3. **Steps** — one line each, in order.
+4. The one risk that matters most, if any is high or medium.
 
-Then stop. The rest is on the page.
+Then stop. The rest is on the page, and the reader can ask you anything about any step.
 
 ## 7. Read the feedback
 
