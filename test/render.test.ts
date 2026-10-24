@@ -135,8 +135,17 @@ describe("the first screen and the steps", () => {
     expect(html).toContain('data-go="st-qty" aria-current="step" title="Count quantity" class="test-pass"');
     expect(html).toContain('class="test-fail"');
     expect(html).toContain("expected 90 to be 100 &lt;b&gt;");
-    expect(html).toContain('<span class="pill high">tests fail</span> <a href="#step-st-discount" data-go="st-discount">first at step 2: Discount big orders</a>');
+    expect(html).toContain('<span class="pill high">tests fail</span> <a href="#step-st-discount" data-go="st-discount">first at step 2: Discount big orders</a> (fixed in step 3)</li>');
+    expect(html).toContain("Tests fail at this step</b> · fixed in step 3");
+    expect(/<style>([^]*?)<\/style>/.exec(html)![1]).not.toMatch(/(^|\n)\.test-fail\{/);
+    expect(html).toContain("The cart test still expects the old total of 100");
+    expect(html).toContain("Failed at <code>npm test</code> (exit code 1)");
+    expect(html).toContain('<span class="k-err">  expected 90 to be 100 &lt;b&gt;</span>');
     expect(page()).not.toContain("tests fail");
+    const failingAtEnd = { ...checks, results: checks.results.map((r: { ok: boolean }, i: number) => (i === 2 ? { ...r, ok: false, tail: "x" } : r)) };
+    const end = renderPage(brief, ctx, files, { formId: "x", diffText, commitDiffs, checks: failingAtEnd });
+    expect(end).toContain("tests fail at step 2, 3, still failing at the end");
+    expect(end).toContain("Not explained yet");
   });
 
   it("uses the slices as parts when there are no steps", () => {
