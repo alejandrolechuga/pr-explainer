@@ -75,7 +75,7 @@ When a PR's commits don't read as a sequence (one commit, or a messy history), t
 
 ### Tests at each step
 
-`pr-explainer test-steps <workdir> --cmd "npm test" [--setup "npm ci"]`, run inside the repo, checks out every commit in a throwaway worktree and runs the command. The page then marks each step ✓ or ✕ and shows the end of the output for a failing step. It runs the PR's code on your computer, so use it only for PRs you trust.
+`pr-explainer test-steps <workdir> --cmd "npm test" [--setup "npm ci"]`, run inside the repo, checks out every commit in a throwaway worktree and runs the command. The page then marks each step ✓ or ✕. A failing step says where it gets fixed ("fixed in step 2" or "still failing at the end of the PR"), the plain-words explanation from the brief (`testNote`), the command that failed, the key lines of its output, and the full output folded. It runs the PR's code on your computer, so use it only for PRs you trust.
 
 ### Since you last looked
 
