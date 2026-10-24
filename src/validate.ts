@@ -1,6 +1,6 @@
 // Checks a brief against the diff and the context, so explanations cannot cite things that are not there.
 import { BriefSchema, type Brief, type CitationT } from "./brief.js";
-import type { Checks } from "./checks.js";
+import { stepResult, type Checks } from "./checks.js";
 import { commitForCitation, fileFor, findCommit, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
 import { lineInDiff, type DiffFile } from "./diff.js";
@@ -188,11 +188,11 @@ function checkSteps(brief: Brief, ctx: PrContext, commitDiffs: CommitDiff[], che
 /** A step whose tests fail needs a plain explanation; a note on a step that passes is a mistake. */
 function checkTestNotes(brief: Brief, ctx: PrContext, checks: Checks | null, warn: Say): void {
   for (const s of brief.steps) {
-    const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha);
-    const results = (checks?.results ?? []).filter((r) => shas.includes(r.sha));
-    const fails = results.some((r) => !r.ok);
+    const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha ?? p);
+    const result = stepResult(checks, ctx.commits, shas); // the same result the page shows
+    const fails = !!result && !result.ok;
     if (fails && !s.testNote) warn(`steps.${s.id}`, "the tests fail at this step: add a testNote saying what broke, in plain words");
-    if (!fails && s.testNote) warn(`steps.${s.id}`, results.length ? "has a testNote but its tests pass" : "has a testNote but its tests were not run (test-steps)");
+    if (!fails && s.testNote) warn(`steps.${s.id}`, result ? "has a testNote but its tests pass at the step's last commit, so the page will not show it" : "has a testNote but its tests were not run (test-steps)");
   }
 }
 

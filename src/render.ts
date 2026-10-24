@@ -2,7 +2,7 @@
 // one step at a time, then deeper layers behind questions, and a way to send the review back.
 import { createHash } from "node:crypto";
 import type { Brief, CitationT } from "./brief.js";
-import type { CheckResult, Checks } from "./checks.js";
+import { stepResult, type CheckResult, type Checks } from "./checks.js";
 import { commitForCitation, readingMinutes, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
 import { diffRows, excerpt, type DiffFile, type Row } from "./diff.js";
@@ -208,9 +208,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return src;
   };
   /** the result at the step's last commit that was tested */
-  const commitOrder = new Map(ctx.commits.map((c, i) => [c.sha, i] as const));
-  const checkOf = (shas: string[]): CheckResult | undefined =>
-    [...shas].sort((a, b) => (commitOrder.get(b) ?? 0) - (commitOrder.get(a) ?? 0)).map((sha) => o.checks?.results.find((r) => r.sha === sha)).find(Boolean);
+  const checkOf = (shas: string[]): CheckResult | undefined => stepResult(o.checks, ctx.commits, shas);
   const stepsFromCommits = (): ViewStep[] => brief.steps.map((s) => {
     const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha ?? p);
     const check = checkOf(shas);
@@ -247,8 +245,8 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   const failing = steps.map((s, i) => [s, i + 1] as const).filter(([s]) => s.check && !s.check.ok);
   /** where a failure at step n (1-based) is fixed: the next step whose tests pass, or null */
   const fixedIn = (n: number): number | null => { const k = steps.slice(n).findIndex((x) => x.check?.ok); return k < 0 ? null : n + k + 1; };
-  const lastTested = steps.filter((x) => x.check).at(-1);
-  const endsFailing = !!lastTested && !lastTested.check!.ok;
+  // "at the end" only when the PR's last step itself was tested and fails
+  const endsFailing = steps.at(-1)?.check?.ok === false;
   const fixNote = (n: number): string => { const f = fixedIn(n); return f ? `fixed in step ${f}` : endsFailing ? "still failing at the end of the PR" : "not fixed in a tested step"; };
   const testSummary = !tested.length ? "" : failing.length ? ` · tests fail at step ${failing.map(([, n]) => n).join(", ")}${endsFailing ? ", still failing at the end" : ""}` : tested.length === steps.length ? " · tests pass at every step" : ` · tests pass at the ${tested.length} steps tested`;
   const keyRow = (l: string) => `<span class="${/^\+/.test(l) ? "k-add" : /^-/.test(l) ? "k-del" : "k-err"}">${esc(l)}</span>`;
@@ -257,7 +255,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return `<div class="fail-box">
       <p class="tf-head"><b>Tests fail at this step</b> · ${esc(fixNote(n))}</p>
       <p class="tf-note">${s.testNote ? esc(s.testNote) : `<span class="muted">Not explained yet; the lines below are what the computer saw.</span>`}</p>
-      ${c.failedAt ? `<p class="tf-cmd">Failed at <code>${esc(c.failedAt)}</code>${typeof c.exitCode === "number" ? ` (exit code ${c.exitCode})` : ""}</p>` : ""}
+      ${c.failedAt ? `<p class="tf-cmd">Last command run <code>${esc(c.failedAt)}</code>${typeof c.exitCode === "number" ? ` (exit code ${c.exitCode})` : ""}</p>` : ""}
       ${c.key?.length ? `<pre class="tf-key">${c.key.map(keyRow).join("\n")}</pre>` : ""}
       <details class="test-out"><summary>Full output (last lines)</summary><pre>${esc(c.tail)}</pre></details>
     </div>`;

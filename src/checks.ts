@@ -58,9 +58,12 @@ function ensureCommits(dir: string, ctx: PrContext, shas: string[]): void {
 
 interface Run { ok: boolean; out: string; failedAt?: string; exitCode?: number | null }
 
+/** a trailing "\\" would join the command to the closing brace of the wrapper below */
+const tidy = (cmd: string) => cmd.replace(/\\\s*$/, "").trimEnd();
+
 /** runs the command with the shell tracing what it runs, so a failure can name the command that failed */
 function sh(cmd: string, cwd: string, timeoutSeconds: number): Run {
-  const r = spawnSync("/bin/sh", ["-c", `{ PS4='%pe-trace% '; set -x\n${cmd}\n} 2>&1`], { cwd, encoding: "utf8", timeout: timeoutSeconds * 1000, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync("/bin/sh", ["-c", `{ PS4='%pe-trace% '; set -x\n${tidy(cmd)}\n} 2>&1`], { cwd, encoding: "utf8", timeout: timeoutSeconds * 1000, maxBuffer: 64 * 1024 * 1024 });
   const timedOut = !!r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
   if (timedOut) killLeftovers(cwd);
   const { out, last } = untrace(`${r.stdout ?? ""}${r.stderr ?? ""}`);
@@ -73,19 +76,29 @@ function sh(cmd: string, cwd: string, timeoutSeconds: number): Run {
     that start with "+" (a diff) are never taken for the trace. */
 export function untrace(raw: string): { out: string; last: string | null } {
   let last: string | null = null;
-  const lines = raw.split("\n").filter((l) => {
-    const m = /^%+pe-trace% (.*)$/.exec(l);
-    if (m) { last = m[1]!; return false; }
-    return true;
+  const lines = raw.split("\n").flatMap((l) => {
+    // output without a final newline leaves the trace mid-line: keep the text before it
+    const m = /^(.*?)%+pe-trace% (.*)$/.exec(l);
+    if (!m) return [l];
+    last = m[2]!;
+    return m[1] ? [m[1]] : [];
   });
   return { out: lines.join("\n"), last };
 }
 
-const KEY = /\b(FAIL(ED)?|ERR(OR)?!?|Error|error|AssertionError|assert(ion)?|expected|Expected|Received|not ok|panic|Traceback|Exception|missing|Cannot|cannot|not found|undefined)\b|✗|✕|×|^[-+](?![-+])/;
+/** words that mark a failure; warnings are left out on purpose */
+const ERROR = /\b(FAIL(ED)?|ERR!?|Error|error|AssertionError|assert(ion)?|expected|Expected|Received|not ok|panic|Traceback|Exception|Cannot find|not found)\b|✗|✕|×/;
+const NOISE = /^\s*(npm (warn|notice)|warning\b)/i;
+const DIFF_LINE = /^[-+](?![-+])/;
 
-/** the lines of a failure's output worth reading first, at most 12 */
+/** the lines of a failure's output worth reading first, at most 12: errors first (the last 8), then
+    the lines a diff adds or removes, when the output holds a diff */
 export function keyLines(out: string): string[] {
-  return out.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim() && KEY.test(l) && !/^(\+\+\+|---) [ab/]/.test(l)).slice(-12);
+  const lines = out.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim() && !NOISE.test(l));
+  const errors = lines.filter((l) => ERROR.test(l)).slice(-8);
+  const hasDiff = lines.some((l) => /^(diff --git |@@ )/.test(l));
+  const diff = hasDiff ? lines.filter((l) => DIFF_LINE.test(l) && !errors.includes(l)) : [];
+  return [...errors, ...diff.slice(0, 12 - errors.length)];
 }
 
 /** a timeout stops the shell, not what it started (test workers, servers): stop what still uses the folder */
@@ -119,14 +132,14 @@ export function runChecks(ctx: PrContext, o: CheckOptions): Checks {
       git(tree, "clean", "-fdxq", ...KEEP.flatMap((k) => ["-e", k]));
       const started = Date.now();
       const changed = prev ? git(tree, "diff", "--name-only", prev, sha).split("\n") : [];
-      let setupFailed: string | null = null;
+      let setupFailed: Run | null = null;
       if (o.setup && (needSetup || changed.some((f) => (o.setupWhen ?? SETUP_WHEN).includes(f.split("/").pop() ?? "")))) {
         log(`${sha.slice(0, 7)}: setup`);
         const s = sh(o.setup, tree, o.timeoutSeconds ?? 600);
-        if (!s.ok) setupFailed = `setup failed:\n${tailOf(s.out)}`;
+        if (!s.ok) setupFailed = { ...s, out: `setup failed:\n${s.out}` };
         needSetup = !s.ok; // a failed setup is tried again at the next commit
       }
-      const run: Run = setupFailed ? { ok: false, out: setupFailed, failedAt: o.setup! } : sh(o.cmd, tree, o.timeoutSeconds ?? 600);
+      const run: Run = setupFailed ?? sh(o.cmd, tree, o.timeoutSeconds ?? 600);
       const seconds = Math.round((Date.now() - started) / 1000);
       log(`${sha.slice(0, 7)}: ${run.ok ? "pass" : "FAIL"} (${seconds}s)`);
       results.push(run.ok ? { sha, ok: true, seconds, tail: "" } : {
@@ -141,6 +154,12 @@ export function runChecks(ctx: PrContext, o: CheckOptions): Checks {
     try { git(o.repoDir, "worktree", "remove", "--force", tree); } catch { rmSync(tree, { recursive: true, force: true }); }
   }
   return { cmd: o.cmd, ...(o.setup ? { setup: o.setup } : {}), at: new Date().toISOString(), results };
+}
+
+/** the result that stands for a step: its newest tested commit, by the PR's commit order */
+export function stepResult(checks: Checks | null | undefined, commits: { sha: string }[], shas: string[]): CheckResult | undefined {
+  const order = new Map(commits.map((c, i) => [c.sha, i] as const));
+  return [...shas].sort((a, b) => (order.get(b) ?? 0) - (order.get(a) ?? 0)).map((sha) => checks?.results.find((r) => r.sha === sha)).find(Boolean);
 }
 
 export function writeChecks(workdir: string, c: Checks): void {

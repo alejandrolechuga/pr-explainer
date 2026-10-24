@@ -139,12 +139,16 @@ describe("the first screen and the steps", () => {
     expect(html).toContain("Tests fail at this step</b> · fixed in step 3");
     expect(/<style>([^]*?)<\/style>/.exec(html)![1]).not.toMatch(/(^|\n)\.test-fail\{/);
     expect(html).toContain("The cart test still expects the old total of 100");
-    expect(html).toContain("Failed at <code>npm test</code> (exit code 1)");
+    expect(html).toContain("Last command run <code>npm test</code> (exit code 1)");
     expect(html).toContain('<span class="k-err">  expected 90 to be 100 &lt;b&gt;</span>');
     expect(page()).not.toContain("tests fail");
     const failingAtEnd = { ...checks, results: checks.results.map((r: { ok: boolean }, i: number) => (i === 2 ? { ...r, ok: false, tail: "x" } : r)) };
     const end = renderPage(brief, ctx, files, { formId: "x", diffText, commitDiffs, checks: failingAtEnd });
     expect(end).toContain("tests fail at step 2, 3, still failing at the end");
+    const lastUntested = { ...checks, results: checks.results.slice(0, 2) };
+    const unsure = renderPage(brief, ctx, files, { formId: "x", diffText, commitDiffs, checks: lastUntested });
+    expect(unsure).not.toContain("still failing at the end");
+    expect(unsure).toContain("not fixed in a tested step");
     expect(end).toContain("Not explained yet");
   });
 

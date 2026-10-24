@@ -213,6 +213,14 @@ describe("steps", () => {
     expect(text).toContain("steps.st-qty: has a testNote but its tests pass");
   });
 
+  it("judges a step by its last commit, as the page does", () => {
+    const checks = JSON.parse(readFileSync(new URL("checks.json", dir), "utf8"));
+    const b = fbrief();
+    b.steps = [{ ...b.steps[0], commits: ["aaa1111", "bbb2222", "ccc3333"], evidence: [], testNote: "x" }];
+    const text = validateBrief(b, parseDiff(fdiff), fctx, fdiff, commitDiffs, checks).findings.map((f) => f.message).join("\n");
+    expect(text).toContain("its tests pass at the step's last commit, so the page will not show it");
+  });
+
   it("warns when a PR with several commits has no steps", () => {
     const b = fbrief();
     b.steps = [];

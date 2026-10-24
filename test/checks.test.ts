@@ -34,12 +34,20 @@ describe("runChecks", () => {
     expect(execFileSync("git", ["worktree", "list"], { cwd: dir, encoding: "utf8" }).trim().split("\n")).toHaveLength(1);
   });
 
+  it("survives a command that ends in a line continuation", () => {
+    const { dir, shas } = repo();
+    const ctx = { version: 1, repo: "t", pr: { title: "t", base: "main", head: "x" }, body: "", intentRecord: null, commits: shas.slice(0, 1).map((sha) => ({ sha, message: "m" })), issueRefs: [], issues: [], docs: [] } as PrContext;
+    expect(runChecks(ctx, { repoDir: dir, cmd: "grep -q good value.txt \\\n" }).results[0]!.ok).toBe(true);
+  });
+
   it("counts a failed setup as a failed step", () => {
     const { dir, shas } = repo();
     const ctx = { version: 1, repo: "t", pr: { title: "t", base: "main", head: "x" }, body: "", intentRecord: null, commits: shas.slice(0, 1).map((sha) => ({ sha, message: "m" })), issueRefs: [], issues: [], docs: [] } as PrContext;
     const c = runChecks(ctx, { repoDir: dir, cmd: "true", setup: "echo no network; exit 3" });
     expect(c.results[0]!.ok).toBe(false);
     expect(c.results[0]!.tail).toMatch(/setup failed:\nno network/);
+    expect(c.results[0]!.failedAt).toBe("exit 3");
+    expect(c.results[0]!.exitCode).toBe(3);
   });
 
   it("starts each commit clean, and tries a failed setup again at the next commit", () => {
@@ -82,6 +90,17 @@ describe("reading a failure", () => {
       '-export const SPEC_VERSION = "0.2.0";', '+export const SPEC_VERSION = "0.3.0";',
       "", " FAIL  test/cart.test.ts > total", "AssertionError: expected 90 to be 100",
     ].join("\n");
-    expect(keyLines(out)).toEqual(['-export const SPEC_VERSION = "0.2.0";', '+export const SPEC_VERSION = "0.3.0";', " FAIL  test/cart.test.ts > total", "AssertionError: expected 90 to be 100"]);
+    expect(keyLines(out)).toEqual([" FAIL  test/cart.test.ts > total", "AssertionError: expected 90 to be 100", '-export const SPEC_VERSION = "0.2.0";', '+export const SPEC_VERSION = "0.3.0";']);
+  });
+
+  it("leaves warnings and list items out, and keeps the error when the output is long", () => {
+    const out = ["FAIL total", "AssertionError: expected 1 to be 2", ...Array.from({ length: 30 }, (_, i) => `- item ${i}`), "npm warn deprecated x: missing peer", "npm error code 1"].join("\n");
+    expect(keyLines(out)).toEqual(["FAIL total", "AssertionError: expected 1 to be 2", "npm error code 1"]);
+  });
+
+  it("finds the trace after output that did not end its line", () => {
+    const { out, last } = untrace("building...%pe-trace% npm test\nFAIL x");
+    expect(last).toBe("npm test");
+    expect(out).toBe("building...\nFAIL x");
   });
 });
