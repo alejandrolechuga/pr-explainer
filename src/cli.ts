@@ -118,7 +118,7 @@ function main(argv: string[]): number {
       const diffText = readFileSync(join(dir, "diff.patch"), "utf8");
       const files = parseDiff(diffText);
       const brief = JSON.parse(readFileSync(join(dir, "brief.json"), "utf8")) as unknown;
-      const report = validateBrief(brief, files, ctx, diffText, readCommitDiffs(dir, ctx));
+      const report = validateBrief(brief, files, ctx, diffText, readCommitDiffs(dir, ctx), readChecks(dir));
       if (values.json) console.log(JSON.stringify({ ...report, brief: undefined }, null, 2));
       else console.log(formatReport(report));
       return report.ok ? 0 : 1;
@@ -222,7 +222,8 @@ function renderTo(dir: string, submit: string | undefined, formIdArg: string | u
   const files = parseDiff(diffText);
   const raw = JSON.parse(readFileSync(join(dir, "brief.json"), "utf8")) as unknown;
   const commitDiffs = readCommitDiffs(dir, ctx);
-  const report = validateBrief(raw, files, ctx, diffText, commitDiffs);
+  const checks = readChecks(dir);
+  const report = validateBrief(raw, files, ctx, diffText, commitDiffs, checks);
   if (!report.ok) { console.error(formatReport(report)); console.error("not rendered: fix the errors first"); return 1; }
   if (submit && !/^(json|form):\S+$/.test(submit)) { console.error('--submit must look like "json:<url>" or "form:<url>"'); return 2; }
   const formId = formIdArg ?? formIdFor(ctx, cfg.formIdPrefix);
@@ -234,7 +235,7 @@ function renderTo(dir: string, submit: string | undefined, formIdArg: string | u
     warnings: report.findings.map((f) => f.message),
     diffText,
     commitDiffs,
-    checks: readChecks(dir),
+    checks,
   });
   const out = join(dir, "page");
   mkdirSync(out, { recursive: true });

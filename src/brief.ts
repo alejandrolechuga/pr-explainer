@@ -39,6 +39,7 @@ export const Step = z.object({
   commits: z.array(z.string().min(7)).min(1).describe("Sha prefixes (7+ characters) of the commits in this step, oldest first; fix-up commits join the step they fix"),
   uses: z.array(z.string()).default([]).describe("Ids of earlier steps this one builds on"),
   evidence: z.array(Citation).default([]).describe("Code citations use this step's own commit diffs (line numbers as of that commit); quotes as usual"),
+  testNote: z.string().optional().describe("Only when test-steps says the tests fail at this step: what broke and why, in plain words, and whether a later step fixes it"),
 });
 
 /** The first screen: three sentences, nothing more. */

@@ -1,5 +1,6 @@
 // Checks a brief against the diff and the context, so explanations cannot cite things that are not there.
 import { BriefSchema, type Brief, type CitationT } from "./brief.js";
+import type { Checks } from "./checks.js";
 import { commitForCitation, fileFor, findCommit, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
 import { lineInDiff, type DiffFile } from "./diff.js";
@@ -34,7 +35,7 @@ function sourceTexts(ctx: PrContext, added: string, source: string, ref?: string
 
 /** `diffText`: the raw diff, so "code-comment" quotes can be checked against its added lines.
  *  `commitDiffs`: each commit's own diff, so steps can be checked against their commits. */
-export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, diffText = "", commitDiffs: CommitDiff[] = []): Report {
+export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, diffText = "", commitDiffs: CommitDiff[] = [], checks: Checks | null = null): Report {
   const added = addedText(diffText);
   const findings: Finding[] = [];
   const err = (where: string, message: string) => findings.push({ level: "error", where, message });
@@ -88,6 +89,7 @@ export function validateBrief(raw: unknown, files: DiffFile[], ctx: PrContext, d
   };
 
   checkSteps(brief, ctx, commitDiffs, checkClaim, err, warn);
+  checkTestNotes(brief, ctx, checks, warn);
 
   checkClaim("intent", brief.intent.basis, brief.intent.evidence);
   if (!ctx.intentRecord) {
@@ -181,6 +183,17 @@ function checkSteps(brief: Brief, ctx: PrContext, commitDiffs: CommitDiff[], che
     checkClaim(where, s.basis, missing.length ? s.evidence.filter((c) => c.kind === "source") : s.evidence, diffs);
   }
   for (const c of real) if (!owner.has(c.sha)) err("steps", `commit ${c.sha.slice(0, 7)} is in no step`);
+}
+
+/** A step whose tests fail needs a plain explanation; a note on a step that passes is a mistake. */
+function checkTestNotes(brief: Brief, ctx: PrContext, checks: Checks | null, warn: Say): void {
+  for (const s of brief.steps) {
+    const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha);
+    const results = (checks?.results ?? []).filter((r) => shas.includes(r.sha));
+    const fails = results.some((r) => !r.ok);
+    if (fails && !s.testNote) warn(`steps.${s.id}`, "the tests fail at this step: add a testNote saying what broke, in plain words");
+    if (!fails && s.testNote) warn(`steps.${s.id}`, results.length ? "has a testNote but its tests pass" : "has a testNote but its tests were not run (test-steps)");
+  }
 }
 
 /** the added lines of a diff, joined, with comment markers removed so a quote can span lines */
