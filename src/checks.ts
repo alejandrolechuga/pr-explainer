@@ -12,6 +12,11 @@ export interface CheckResult {
   seconds: number;
   /** the last lines of the output, for a failed run */
   tail: string;
+  /** for a failed run: the last command the shell ran (the one that failed, in an `a && b` chain) */
+  failedAt?: string;
+  exitCode?: number | null;
+  /** for a failed run: the lines that say what went wrong (errors, failed tests, differences) */
+  key?: string[];
 }
 
 export interface Checks {
@@ -51,12 +56,36 @@ function ensureCommits(dir: string, ctx: PrContext, shas: string[]): void {
   if (missing.length) throw new Error(`commits not in ${dir}: ${missing.map((s) => s.slice(0, 7)).join(", ")} (run inside the PR's repo, or pass --dir)`);
 }
 
-function sh(cmd: string, cwd: string, timeoutSeconds: number): { ok: boolean; out: string } {
-  const r = spawnSync("/bin/sh", ["-c", cmd], { cwd, encoding: "utf8", timeout: timeoutSeconds * 1000, maxBuffer: 64 * 1024 * 1024 });
+interface Run { ok: boolean; out: string; failedAt?: string; exitCode?: number | null }
+
+/** runs the command with the shell tracing what it runs, so a failure can name the command that failed */
+function sh(cmd: string, cwd: string, timeoutSeconds: number): Run {
+  const r = spawnSync("/bin/sh", ["-c", `{ PS4='%pe-trace% '; set -x\n${cmd}\n} 2>&1`], { cwd, encoding: "utf8", timeout: timeoutSeconds * 1000, maxBuffer: 64 * 1024 * 1024 });
   const timedOut = !!r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
   if (timedOut) killLeftovers(cwd);
-  const out = `${r.stdout ?? ""}${r.stderr ?? ""}${timedOut ? `\nstopped after ${timeoutSeconds}s` : r.error ? `\n${r.error.message}` : ""}`;
-  return { ok: r.status === 0 && !r.error, out };
+  const { out, last } = untrace(`${r.stdout ?? ""}${r.stderr ?? ""}`);
+  const note = timedOut ? `\nstopped after ${timeoutSeconds}s` : r.error ? `\n${r.error.message}` : "";
+  return { ok: r.status === 0 && !r.error, out: out + note, ...(last ? { failedAt: last } : {}), exitCode: r.status };
+}
+
+/** splits the shell's trace lines ("%pe-trace% npm test"; the first character repeats in nested
+    shells) from the output; returns the last command traced. A marker of our own, so output lines
+    that start with "+" (a diff) are never taken for the trace. */
+export function untrace(raw: string): { out: string; last: string | null } {
+  let last: string | null = null;
+  const lines = raw.split("\n").filter((l) => {
+    const m = /^%+pe-trace% (.*)$/.exec(l);
+    if (m) { last = m[1]!; return false; }
+    return true;
+  });
+  return { out: lines.join("\n"), last };
+}
+
+const KEY = /\b(FAIL(ED)?|ERR(OR)?!?|Error|error|AssertionError|assert(ion)?|expected|Expected|Received|not ok|panic|Traceback|Exception|missing|Cannot|cannot|not found|undefined)\b|✗|✕|×|^[-+](?![-+])/;
+
+/** the lines of a failure's output worth reading first, at most 12 */
+export function keyLines(out: string): string[] {
+  return out.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim() && KEY.test(l) && !/^(\+\+\+|---) [ab/]/.test(l)).slice(-12);
 }
 
 /** a timeout stops the shell, not what it started (test workers, servers): stop what still uses the folder */
@@ -97,10 +126,15 @@ export function runChecks(ctx: PrContext, o: CheckOptions): Checks {
         if (!s.ok) setupFailed = `setup failed:\n${tailOf(s.out)}`;
         needSetup = !s.ok; // a failed setup is tried again at the next commit
       }
-      const run = setupFailed ? { ok: false, out: setupFailed } : sh(o.cmd, tree, o.timeoutSeconds ?? 600);
+      const run: Run = setupFailed ? { ok: false, out: setupFailed, failedAt: o.setup! } : sh(o.cmd, tree, o.timeoutSeconds ?? 600);
       const seconds = Math.round((Date.now() - started) / 1000);
       log(`${sha.slice(0, 7)}: ${run.ok ? "pass" : "FAIL"} (${seconds}s)`);
-      results.push({ sha, ok: run.ok, seconds, tail: run.ok ? "" : tailOf(run.out) });
+      results.push(run.ok ? { sha, ok: true, seconds, tail: "" } : {
+        sha, ok: false, seconds, tail: tailOf(run.out),
+        ...(run.failedAt ? { failedAt: run.failedAt } : {}),
+        ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
+        key: keyLines(run.out),
+      });
       prev = sha;
     }
   } finally {
