@@ -10,6 +10,7 @@
     { "id": "st-qty", "title": "Count quantity", "summary": "The total multiplies each price by its quantity.", "basis": "inferred", "commits": ["aaa1111"],
       "evidence": [{ "kind": "code", "file": "src/cart.ts", "line": 12 }] },
     { "id": "st-discount", "title": "Discount big orders", "summary": "Totals over $100 take 10% off, and the numbers get their own file.", "why": "Applied after summing so rounding matches the receipt.", "basis": "stated", "commits": ["bbb2222"], "uses": ["st-qty"],
+      "testNote": "The cart test still expects the old total of 100 for a $100 order; the new discount makes it 90, so the test, not the code, is out of date.",
       "evidence": [{ "kind": "source", "source": "commit", "ref": "bbb2222", "quote": "Applied after summing so rounding matches the receipt." }, { "kind": "code", "file": "src/cart.ts", "line": 14, "endLine": 16 }, { "kind": "code", "file": "src/new.ts", "line": 1, "endLine": 2 }] },
     { "id": "st-cleanup", "title": "Clean up", "summary": "Old notes removed, one file renamed, a logo added.", "basis": "inferred", "commits": ["ccc3333"] }
   ],

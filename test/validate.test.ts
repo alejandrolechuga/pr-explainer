@@ -201,6 +201,26 @@ describe("steps", () => {
     expect(r.findings.map((f) => f.message).join("\n")).toContain("no saved diff for commit bbb2222");
   });
 
+  it("asks for a plain explanation where the tests fail", () => {
+    const checks = JSON.parse(readFileSync(new URL("checks.json", dir), "utf8"));
+    const b = fbrief();
+    b.steps[1]!.testNote = undefined;
+    b.steps[0]!.testNote = "nothing broke";
+    const r = validateBrief(b, parseDiff(fdiff), fctx, fdiff, commitDiffs, checks);
+    const text = r.findings.map((f) => `${f.where}: ${f.message}`).join("\n");
+    expect(r.ok).toBe(true);
+    expect(text).toContain("steps.st-discount: the tests fail at this step: add a testNote");
+    expect(text).toContain("steps.st-qty: has a testNote but its tests pass");
+  });
+
+  it("judges a step by its last commit, as the page does", () => {
+    const checks = JSON.parse(readFileSync(new URL("checks.json", dir), "utf8"));
+    const b = fbrief();
+    b.steps = [{ ...b.steps[0], commits: ["aaa1111", "bbb2222", "ccc3333"], evidence: [], testNote: "x" }];
+    const text = validateBrief(b, parseDiff(fdiff), fctx, fdiff, commitDiffs, checks).findings.map((f) => f.message).join("\n");
+    expect(text).toContain("its tests pass at the step's last commit, so the page will not show it");
+  });
+
   it("warns when a PR with several commits has no steps", () => {
     const b = fbrief();
     b.steps = [];

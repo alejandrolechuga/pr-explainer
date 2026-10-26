@@ -99,7 +99,8 @@ try {
   await page.click('#step-st-discount .fb button[data-v="change"]');
   await page.fill("#step-st-discount .fb textarea", "Use the constants");
   assert.ok(await page.locator('.strip button[data-go="st-discount"].test-fail').count(), "the strip marks the step whose tests fail");
-  assert.match((await page.locator("#step-st-discount .test-out pre").textContent()) ?? "", /expected 90 to be 100/);
+  assert.match((await page.locator("#step-st-discount .tf-key").textContent()) ?? "", /expected 90 to be 100/);
+  assert.match((await page.locator("#step-st-discount .tf-head").textContent()) ?? "", /fixed in step 3/);
   ok("steps: one at a time, Looks good moves on, strip and Prev/Next jump, code from the step's own commit, test results per step, place kept on reload");
 
   await page.click("#summary > summary");

@@ -2,7 +2,7 @@
 // one step at a time, then deeper layers behind questions, and a way to send the review back.
 import { createHash } from "node:crypto";
 import type { Brief, CitationT } from "./brief.js";
-import type { CheckResult, Checks } from "./checks.js";
+import { stepResult, type CheckResult, type Checks } from "./checks.js";
 import { commitForCitation, readingMinutes, type CommitDiff } from "./commits.js";
 import type { PrContext } from "./context.js";
 import { diffRows, excerpt, type DiffFile, type Row } from "./diff.js";
@@ -83,6 +83,8 @@ interface ViewStep {
   fp: string;
   /** the tests at the step's last commit, when they were run */
   check?: CheckResult;
+  /** what a failure means, in plain words (from the brief) */
+  testNote?: string;
   body: string;
 }
 
@@ -206,9 +208,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
     return src;
   };
   /** the result at the step's last commit that was tested */
-  const commitOrder = new Map(ctx.commits.map((c, i) => [c.sha, i] as const));
-  const checkOf = (shas: string[]): CheckResult | undefined =>
-    [...shas].sort((a, b) => (commitOrder.get(b) ?? 0) - (commitOrder.get(a) ?? 0)).map((sha) => o.checks?.results.find((r) => r.sha === sha)).find(Boolean);
+  const checkOf = (shas: string[]): CheckResult | undefined => stepResult(o.checks, ctx.commits, shas);
   const stepsFromCommits = (): ViewStep[] => brief.steps.map((s) => {
     const shas = s.commits.map((p) => ctx.commits.find((c) => c.sha.startsWith(p))?.sha ?? p);
     const check = checkOf(shas);
@@ -223,6 +223,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
       id: s.id, title: s.title, summary: s.summary, ...(s.why ? { why: s.why } : {}), basis: s.basis,
       minutes: readingMinutes(changed), uses: s.uses,
       ...(check ? { check } : {}),
+      ...(s.testNote ? { testNote: s.testNote } : {}),
       meta: `${shas.length === 1 ? "commit" : "commits"} ${commitLinks}`,
       fp: fingerprint(shas.flatMap((sha) => [...commitSource(sha).rows])),
       body: cites(s.evidence, srcFor),
@@ -242,7 +243,23 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
 
   const tested = steps.filter((s) => s.check);
   const failing = steps.map((s, i) => [s, i + 1] as const).filter(([s]) => s.check && !s.check.ok);
-  const testSummary = !tested.length ? "" : failing.length ? ` · tests fail at step ${failing.map(([, n]) => n).join(", ")}` : tested.length === steps.length ? " · tests pass at every step" : ` · tests pass at the ${tested.length} steps tested`;
+  /** where a failure at step n (1-based) is fixed: the next step whose tests pass, or null */
+  const fixedIn = (n: number): number | null => { const k = steps.slice(n).findIndex((x) => x.check?.ok); return k < 0 ? null : n + k + 1; };
+  // "at the end" only when the PR's last step itself was tested and fails
+  const endsFailing = steps.at(-1)?.check?.ok === false;
+  const fixNote = (n: number): string => { const f = fixedIn(n); return f ? `fixed in step ${f}` : endsFailing ? "still failing at the end of the PR" : "not fixed in a tested step"; };
+  const testSummary = !tested.length ? "" : failing.length ? ` · tests fail at step ${failing.map(([, n]) => n).join(", ")}${endsFailing ? ", still failing at the end" : ""}` : tested.length === steps.length ? " · tests pass at every step" : ` · tests pass at the ${tested.length} steps tested`;
+  const keyRow = (l: string) => `<span class="${/^\+/.test(l) ? "k-add" : /^-/.test(l) ? "k-del" : "k-err"}">${esc(l)}</span>`;
+  const failBox = (s: ViewStep, n: number): string => {
+    const c = s.check!;
+    return `<div class="fail-box">
+      <p class="tf-head"><b>Tests fail at this step</b> · ${esc(fixNote(n))}</p>
+      <p class="tf-note">${s.testNote ? esc(s.testNote) : `<span class="muted">Not explained yet; the lines below are what the computer saw.</span>`}</p>
+      ${c.failedAt ? `<p class="tf-cmd">Last command run <code>${esc(c.failedAt)}</code>${typeof c.exitCode === "number" ? ` (exit code ${c.exitCode})` : ""}</p>` : ""}
+      ${c.key?.length ? `<pre class="tf-key">${c.key.map(keyRow).join("\n")}</pre>` : ""}
+      <details class="test-out"><summary>Full output (last lines)</summary><pre>${esc(c.tail)}</pre></details>
+    </div>`;
+  };
   const stepLink = (id: string) => `<a href="#step-${esc(id)}" data-go="${esc(id)}">step ${stepNo.get(id)}</a>`;
   const stepCard = (s: ViewStep, i: number): string => {
     const usedBy = steps.filter((x) => x.uses.includes(s.id)).map((x) => x.id);
@@ -257,7 +274,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
       <p class="step-summary">${esc(s.summary)}</p>
       ${s.why ? `<p class="step-why"><b>Why:</b> ${esc(s.why)} ${s.basis ? basis(s.basis) : ""}</p>` : ""}
       ${links ? `<p class="step-links">${links}</p>` : ""}
-      ${s.check && !s.check.ok ? `<details class="test-out"><summary>Why the tests fail here (last lines of the output)</summary><pre>${esc(s.check.tail)}</pre></details>` : ""}
+      ${s.check && !s.check.ok ? failBox(s, i + 1) : ""}
       ${s.body}
       ${fb("step", s.id, `Step ${i + 1}: ${s.title}`, "Looks good")}
       <div class="pager">
@@ -279,7 +296,7 @@ export function renderPage(brief: Brief, ctx: PrContext, files: DiffFile[], o: R
   // ---- the first screen: three sentences and where to look
   const g = brief.glance;
   const lookHere = [
-    ...(failing.length ? [`<li><span class="pill high">tests fail</span> <a href="#step-${esc(failing[0]![0].id)}" data-go="${esc(failing[0]![0].id)}">first at step ${failing[0]![1]}: ${esc(failing[0]![0].title)}</a></li>`] : []),
+    ...(failing.length ? [`<li><span class="pill high">tests fail</span> <a href="#step-${esc(failing[0]![0].id)}" data-go="${esc(failing[0]![0].id)}">first at step ${failing[0]![1]}: ${esc(failing[0]![0].title)}</a> (${esc(fixNote(failing[0]![1]))})</li>`] : []),
     ...risks.filter((r) => r.severity !== "low").slice(0, 3).map((r) => `<li>${riskPill(r.severity)} <a href="#risk-${esc(r.id)}">${esc(r.title)}</a></li>`),
     ...(brief.mismatches.length ? [`<li><span class="pill medium">mismatch</span> <a href="#plan">${brief.mismatches.length} place${brief.mismatches.length === 1 ? "" : "s"} where the code differs from what was said</a></li>`] : []),
   ];
@@ -485,8 +502,14 @@ h2 .meta{color:var(--muted);font-size:13px;font-weight:400}
 .strip button.test-pass .dot::before{content:"✓";background:var(--stated);color:var(--surface)}
 .strip button.test-fail .dot::before{content:"✕";background:var(--high);color:var(--surface)}
 .strip .dot{position:relative}
-.test-out{margin:8px 0;border:1px solid var(--high);border-radius:8px;background:var(--high-bg)}
-.test-out summary{cursor:pointer;padding:6px 10px;font-size:14px;color:var(--high);font-weight:600}
+.fail-box{margin:10px 0;border:1px solid var(--high);border-left-width:4px;border-radius:8px;padding:8px 12px;background:var(--surface)}
+.tf-head{margin:0;color:var(--high);font-size:14px}
+.tf-note{font-size:15px;margin:6px 0}
+.tf-cmd{font-size:13px;color:var(--muted);margin:4px 0}
+.tf-key{margin:6px 0;padding:6px 8px;border-radius:6px;background:var(--code-bg);font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.tf-key .k-add{color:var(--add)}.tf-key .k-del{color:var(--del)}.tf-key .k-err{color:var(--high)}
+.test-out{margin:6px 0 0;border:1px solid var(--line);border-radius:8px}
+.test-out summary{cursor:pointer;padding:6px 10px;font-size:13px;color:var(--muted)}
 .test-out pre{margin:0;padding:8px 10px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:var(--code-bg);color:var(--ink);border-radius:0 0 8px 8px}
 .since{background:var(--stated-bg);border-left:3px solid var(--stated);padding:8px 12px;border-radius:6px;font-size:14px;margin:0 0 12px}
 .strip button.since-changed .dot::after,.strip button.since-new .dot::after{content:"";position:absolute;top:-7px;right:-9px;width:11px;height:11px;border-radius:50%;background:var(--medium);border:2px solid var(--surface)}

@@ -60,7 +60,8 @@ When the PR's commits are steps and the code comes from the user or someone they
 - Pick the command the repo itself uses (for Node, the `test` or `qa` script in `package.json`, e.g. `npm test`; `--setup "npm ci"`). Keep it to tests that need no network or secrets.
 - It checks each commit out in a throwaway worktree, so the user's working copy is not touched. It runs the PR's code on this computer: never run it on a stranger's PR.
 - Skip it when the repo has no tests or they take more than a few minutes per commit; say so in the reply.
-- The page then shows pass/fail per step, and a failing step shows why. A step that fails while later ones pass is worth one line in your reply.
+- Then read `checks.json`. For each step whose tests fail, write its `testNote` in `brief.json`: open the failing commit (`PE lines <workdir> --commit <sha>`) next to the failure's `failedAt` and `key` lines, and say in plain words which check failed, what the commit did to cause it, whether a later step fixes it, and whether it matters (a stale generated file between two commits is harmless; a real test broken at the end of the PR is not). `validate` warns about a failing step without a note.
+- The page shows pass/fail per step; a failing step shows your note, the command that failed, the key lines and the full output. A step that fails while later ones pass is worth one line in your reply; a PR that still fails at its end is worth the first line.
 
 ## 5. Build the review page
 
